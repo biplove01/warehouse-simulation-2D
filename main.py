@@ -2,9 +2,14 @@ import pygame
 from sys import exit
 import os
 
+# from constants import *
+
+
 PADDING_BORDER = 10
 
 TILE_SIZE = 50
+TILE_GAP = 3
+
 CHARGE_STATION_HEIGHT = 58
 SHELF_HEIGHT = 74
 SHELF_TOP_HEIGHT = 36
@@ -28,6 +33,7 @@ ROBOT_VELOCITY_Y = 3
 FRICTION = 0.4
 
 
+
 def load_img(image_name, scale=None):
   image = pygame.image.load(os.path.join("assets", image_name))
   if scale is not None:
@@ -44,6 +50,7 @@ shelf_image_empty = load_img("shelf-empty.png", (TILE_SIZE, SHELF_HEIGHT))
 shelf_image_filled = load_img("shelf-filled.png", (TILE_SIZE, SHELF_HEIGHT))
 
 robot_charge_station = load_img("robot-charging.png", (TILE_SIZE, CHARGE_STATION_HEIGHT))
+drop_off_platform_image = load_img("drop-off.png", (4 * (TILE_SIZE + TILE_GAP), CHARGE_STATION_HEIGHT))
 
 
 pygame.init()
@@ -51,6 +58,7 @@ window = pygame.display.set_mode((GAME_WIDTH, GAME_HEIGHT))
 pygame.display.set_caption("Warehouse Simulation")
 pygame.display.set_icon(robot_image_side)
 clock = pygame.time.Clock()
+
 
 class Robot(pygame.Rect):
   def __init__(self):
@@ -81,7 +89,13 @@ class Shelf(pygame.Rect):
 
 class ChargeStation(pygame.Rect):
   def __init__(self, x, y, image):
-    pygame.Rect.__init__(self, x, y, TILE_SIZE, SHELF_HEIGHT)
+    pygame.Rect.__init__(self, x, y, TILE_SIZE, CHARGE_STATION_HEIGHT)
+    self.image = image
+
+
+class DropoffPlatform(pygame.Rect):
+  def __init__(self, x, y, image):
+    pygame.Rect.__init__(self, x, y, TILE_SIZE, CHARGE_STATION_HEIGHT)
     self.image = image
 
 
@@ -102,28 +116,52 @@ def move():
   robot.y += robot.velocity_y
 
 
-
-
 def handle_movements():
   keys = pygame.key.get_pressed()
-  if keys[pygame.K_UP] or keys[pygame.K_w]:
+
+  moving_up = keys[pygame.K_UP] or keys[pygame.K_w]
+  moving_down = keys[pygame.K_DOWN] or keys[pygame.K_s]
+  moving_left = keys[pygame.K_LEFT] or keys[pygame.K_a]
+  moving_right = keys[pygame.K_RIGHT] or keys[pygame.K_d]
+
+  if moving_up:
     robot.velocity_y = -ROBOT_VELOCITY_Y
     robot.direction = 'up'
-  if keys[pygame.K_DOWN] or keys[pygame.K_s]:
+  elif moving_down:
     robot.velocity_y = ROBOT_VELOCITY_Y
     robot.direction = 'down'
-  if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+  elif moving_right:
     robot.velocity_x = ROBOT_VELOCITY_X
     robot.direction = 'right'
-  if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+  elif moving_left:
     robot.velocity_x = -ROBOT_VELOCITY_X
     robot.direction = 'left'
 
 
-def create_map():
-  # Charge stations
-  TILE_GAP = 3
 
+def draw():
+  window.fill("#5FCB9B")
+
+  # draws charge stations
+  for station in charge_stations:
+    window.blit(station.image, station)
+
+  # draws drop off platforms
+  for platform in dropoff_platforms:
+    window.blit(platform.image, platform)
+
+  # updates the robot image file as per curr state
+  robot.update_image()
+  window.blit(robot.image, robot)
+
+  # draws shelves
+  for shelf in shelves:
+    window.blit(shelf.image, shelf)
+
+
+def create_map():
+
+  # Charge stations
   for i in range(5):
     x = PADDING_BORDER + i * (TILE_SIZE + TILE_GAP)
     y = PADDING_BORDER
@@ -161,27 +199,30 @@ def create_map():
     shelves.append(shelf7)
 
   # shelves vertical
+  for i in range(9):
+    x1 = PADDING_BORDER
+    y1 = PADDING_BORDER + (CHARGE_STATION_HEIGHT + TILE_SIZE + 3* TILE_GAP)  + i * (SHELF_TOP_HEIGHT + TILE_GAP)
+
+    x2 = x1 + 2* (TILE_SIZE + TILE_GAP)
+    x3 = x2 + 17* (TILE_SIZE + TILE_GAP)
+    x4 = x3 + TILE_SIZE + TILE_GAP
+
+    shelf1 = Shelf(x1, y1, shelf_image_empty)
+    shelf2 = Shelf(x2, y1, shelf_image_empty)
+    shelf3 = Shelf(x3, y1, shelf_image_empty)
+    shelf4 = Shelf(x4, y1, shelf_image_empty)
 
 
+    shelves.append(shelf1)
+    shelves.append(shelf2)
+    shelves.append(shelf3)
+    shelves.append(shelf4)
 
-
-
-def draw():
-  window.fill("#5FCB9B")
-
-
-  # draws charge stations
-  for station in charge_stations:
-    window.blit(station.image, station)
-
-  # updates the robot image file as per curr state
-  robot.update_image()
-  window.blit(robot.image, robot)
-
-  # draws shelves
-  for shelf in shelves:
-    window.blit(shelf.image, shelf)
-
+  # Drop off platform
+  x_dropoff = PADDING_BORDER
+  y_dropoff = y7 + 2*(TILE_SIZE+ TILE_GAP)
+  dropoff_platform = DropoffPlatform(x_dropoff, y_dropoff, drop_off_platform_image)
+  dropoff_platforms.append(dropoff_platform)
 
 
 
@@ -189,6 +230,7 @@ def draw():
 robot = Robot()
 charge_stations = []
 shelves = []
+dropoff_platforms = []
 create_map()
 
 while True:

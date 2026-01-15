@@ -1,2 +1,1 @@
-_map():
-#   for i in ra
+SHELF_TOP_HEIGHT + TILE_GAP
