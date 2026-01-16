@@ -2,14 +2,21 @@ import pygame
 from constants import *
 
 # ROBOT (PLAYER)
-class Robot(pygame.Rect):
-  def __init__(self):
-    pygame.Rect.__init__(self, ROBOT_X, ROBOT_Y, ROBOT_WIDTH, ROBOT_LENGTH)
-    self.image = ROBOT_IMAGE_SIDE
-    self.velocity_x = 0
-    self.velocity_y = 0
+class Robot():
+  def __init__(self, start_x=0, start_y=0):
+    self.grid_x = start_x
+    self.grid_y = start_y
     self.direction = 'up'
     self.loaded = False
+    self.update_image()
+
+  def _grid_to_pixel_centered(self, gx, gy):
+    base_x = PADDING_BORDER + gx * GRID_SPACING
+    base_y = PADDING_BORDER + gy * GRID_SPACING
+    offset_x = (TILE_SIZE - ROBOT_WIDTH) // 2
+    offset_y = (TILE_SIZE - ROBOT_HEIGHT) // 2
+    return base_x + offset_x, base_y + offset_y
+
 
   def update_image(self):
     if self.direction == 'right' or self.direction == 'left':
@@ -17,25 +24,44 @@ class Robot(pygame.Rect):
     elif self.direction == 'up' or self.direction =='down':
       self.image = ROBOT_IMAGE_VERTICAL_BOX if self.loaded else ROBOT_IMAGE_VERTICAL
 
-  def handle_inputs(self):
-    keys = pygame.key.get_pressed()
-    moving_up = keys[pygame.K_UP] or keys[pygame.K_w]
-    moving_down = keys[pygame.K_DOWN] or keys[pygame.K_s]
-    moving_left = keys[pygame.K_LEFT] or keys[pygame.K_a]
-    moving_right = keys[pygame.K_RIGHT] or keys[pygame.K_d]
+  def get_pixel_rect(self):
+    x = PADDING_BORDER + self.grid_x * GRID_SPACING
+    y = PADDING_BORDER + self.grid_y * GRID_SPACING
+    return pygame.Rect(x, y, ROBOT_WIDTH, ROBOT_HEIGHT)
 
-    if moving_up:
-      self.velocity_y = -ROBOT_VELOCITY_Y
-      self.direction = 'up'
-    elif moving_down:
-      self.velocity_y = ROBOT_VELOCITY_Y
-      self.direction = 'down'
-    elif moving_right:
-      self.velocity_x = ROBOT_VELOCITY_X
-      self.direction = 'right'
-    elif moving_left:
-      self.velocity_x = -ROBOT_VELOCITY_X
-      self.direction = 'left'
+
+  def can_move_to(self, gx, gy, spaces):
+    if gx < 0 or gx >= GRID_WIDTH or gy < 0 or gy >= GRID_HEIGHT:
+      return False
+
+    for space in spaces:
+      space_grid_x = round((space.x - PADDING_BORDER) / GRID_SPACING)
+      space_grid_y = round((space.y - PADDING_BORDER) / GRID_SPACING)
+      if space_grid_x == gx and space_grid_y == gy:
+        return False
+    return True
+
+
+  def handle_inputs_single(self, direction, obstracle):
+    dx, dy = 0, 0
+    if direction == 'up':
+        dy = -1
+    elif direction == 'down':
+        dy = 1
+    elif direction == 'left':
+        dx = -1
+    elif direction == 'right':
+        dx = 1
+    else:
+        return
+
+    self.direction = direction
+    next_x = self.grid_x + dx
+    next_y = self.grid_y + dy
+
+    if self.can_move_to(next_x, next_y, obstracle):
+      self.grid_x = next_x
+      self.grid_y = next_y
     self.update_image()
 
 
@@ -44,115 +70,77 @@ class Robot(pygame.Rect):
     if self.loaded:
       return
 
+    robot_rect = self.get_pixel_rect()
     margin = 30
 
     for shelf in shelves:
       if not shelf.has_box:
         continue
 
-      # visual dimensions for interaction
-      shelf_visual_bottom = shelf.y + SHELF_IMAGE_HEIGHT
-      shelf_visual_top = shelf.y
-      shelf_right = shelf.x + TILE_SIZE
-      shelf_left = shelf.x
+      shelf_center_x = shelf.x + TILE_SIZE // 2
+      shelf_center_y = shelf.y + TILE_SIZE // 2
 
-      dx = abs(self.centerx - (shelf.x + TILE_SIZE // 2))           # horizontal center of robot - hor center of shelf
-      dy = abs(self.centery - (shelf.y + SHELF_IMAGE_HEIGHT // 2))  # vertical center of robot - ver center of shelf
+      dx = abs(robot_rect.centerx - shelf_center_x)
+      dy = abs(robot_rect.centery - shelf_center_y)
 
       in_front = False
-
       if self.direction == 'up':
-        if (self.top >= shelf_visual_bottom - margin and self.top <= shelf_visual_bottom + margin and dx < TILE_SIZE // 2):
+        if (shelf.y + SHELF_IMAGE_HEIGHT - margin <= robot_rect.top <= shelf.y + SHELF_IMAGE_HEIGHT + margin and dx < TILE_SIZE // 2):
           in_front = True
       elif self.direction == 'down':
-        if (self.bottom >= shelf_visual_top + margin and dx < TILE_SIZE // 2):
+        if (shelf.y - margin <= robot_rect.bottom <= shelf.y + margin and dx < TILE_SIZE // 2):
           in_front = True
       elif self.direction == 'left':
-        if (shelf_right - margin <= self.left <= shelf_right + margin and self.bottom > shelf.y and self.top < shelf.y + SHELF_IMAGE_HEIGHT):
-            in_front = True
-
+        if (shelf.x + TILE_SIZE - margin <= robot_rect.left <= shelf.x + TILE_SIZE + margin and shelf.y < robot_rect.bottom and robot_rect.top < shelf.y + SHELF_IMAGE_HEIGHT):
+          in_front = True
       elif self.direction == 'right':
-        if (shelf_left - margin <= self.right <= shelf_left + margin and self.bottom > shelf.y and self.top < shelf.y + SHELF_IMAGE_HEIGHT):
-            in_front = True
+        if (shelf.x - margin <= robot_rect.right <= shelf.x + margin and shelf.y < robot_rect.bottom and robot_rect.top < shelf.y + SHELF_IMAGE_HEIGHT):
+          in_front = True
 
       if in_front:
         self.loaded = True
         shelf.has_box = False
         shelf.image = shelf.empty_image
         self.update_image()
-        print("Box picked from shelf!")
+        print("Box picked up!")
         break
+
 
   def drop_box(self, dropoff_platforms):
     if not self.loaded:
-      return False
+        return False
 
+    robot_rect = self.get_pixel_rect()
     margin = 15
 
     for platform in dropoff_platforms:
-      dx = abs(self.centerx - (platform.centerx + TILE_SIZE * 2))                 # horiz center of robot - horiz center of platform
-      dy = abs(self.centery - (platform.centery + CHARGE_STATION_HEIGHT // 2))    # verti center of robot - verti center of platform
+      # Platform bounds
+      plat_left = platform.x
+      plat_right = platform.x + platform.image.get_width()
+      plat_top = platform.y
+      plat_bottom = platform.y + platform.image.get_height()
 
-      hitbox = platform.hitbox
       in_position = False
 
       if self.direction == 'down':
-          if (platform.top - margin <= self.bottom <= platform.top + margin and dx < (3* TILE_SIZE) // 2):
-              in_position = True
+        if (plat_top - margin <= robot_rect.bottom <= plat_top + margin and plat_left <= robot_rect.centerx <= plat_right):
+            in_position = True
 
       elif self.direction == 'up':
-          if (platform.bottom - margin <= self.top <= platform.bottom + margin and dx < (3* TILE_SIZE) // 2):
-              in_position = True
+        if (plat_bottom - margin <= robot_rect.top <= plat_bottom + margin and plat_left <= robot_rect.centerx <= plat_right):
+          in_position = True
 
       elif self.direction == 'right':
-        # Robot left of platform, facing right
-        if (hitbox.left - margin <= self.right <= hitbox.left + margin and
-            self.bottom > hitbox.top and self.top < hitbox.bottom):
-            in_position = True
+        if (plat_left - margin <= robot_rect.right <= plat_left + margin and plat_top <= robot_rect.centery <= plat_bottom):
+          in_position = True
 
       elif self.direction == 'left':
-        # Robot right of platform, facing left
-        if (hitbox.right - margin <= self.left <= hitbox.right + margin and
-            self.bottom > hitbox.top and self.top < hitbox.bottom):
-            in_position = True
-
+        if (plat_right - margin <= robot_rect.left <= plat_right + margin and plat_top <= robot_rect.centery <= plat_bottom):
+          in_position = True
 
       if in_position:
         self.loaded = False
         self.update_image()
         return True
 
-      return False
-
-
-  def handle_physics(self, obstracles):
-
-    # move horizontally
-    self.x += ROBOT_DISTANCE
-    if self.left < 0:
-      self.left = 0
-    elif self.right > GAME_WIDTH:
-      self.right = GAME_WIDTH
-
-    for obj in obstracles:
-      hitbox = getattr(obj, 'hitbox', obj)
-      if self.colliderect(hitbox) and self.bottom > hitbox.top and self.top < hitbox.bottom:
-        if self.velocity_x > 0:
-            self.right = hitbox.left
-        elif self.velocity_x < 0:
-            self.left = hitbox.right
-
-    # move vertically
-    self.y += ROBOT_DISTANCE
-    if self.top < 0:
-      self.top = 0
-    elif self.bottom > GAME_HEIGHT:
-      self.bottom = GAME_HEIGHT
-
-    for obj in obstracles:
-      hitbox = getattr(obj, 'hitbox', obj)
-      if self.colliderect(hitbox):
-        if self.velocity_y > 0:
-            self.bottom = hitbox.top
-        elif self.velocity_y < 0:
-            self.top = hitbox.bottom
+    return False

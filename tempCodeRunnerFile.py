@@ -85,11 +85,11 @@ while True:
   }
 
   moved = False
-  obstracles = shelves + dropoff_platforms
   for dir_name, (k1, k2) in direction_keys.items():
     if (keys[k1] or keys[k2]) and not (last_keys[k1] or last_keys[k2]):
       # Key was just pressed!
-      robot.handle_inputs_single(dir_name, obstracles)
+      robot.handle_inputs_single(dir_name, shelves)
+      robot.handle_inputs_single(dir_name, dropoff_platforms)
       moved = True
       break
 

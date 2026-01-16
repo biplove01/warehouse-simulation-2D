@@ -2,20 +2,20 @@ import pygame
 from constants import *
 
 
-class Box(pygame.Rect):
-  def __init__(self, x, y, image):
-    pygame.Rect.__init__(self, x, y, BOX_WIDTH, BOX_HEIGHT)
-    self.image = image
+# class Box(pygame.Rect):
+#   def __init__(self, x, y, image):
+#     pygame.Rect.__init__(self, x, y, BOX_WIDTH, BOX_HEIGHT)
+#     self.image = image
 
 # SHELF
 class Shelf(pygame.Rect):
   def __init__(self, x, y, empty_shelf_image, loaded_shelf_image):
-    pygame.Rect.__init__(self, x, y, TILE_SIZE, SHELF_HEIGHT)
+    pygame.Rect.__init__(self, x, y, TILE_SIZE, TILE_SIZE)
     self.empty_image = empty_shelf_image
     self.loaded_image = loaded_shelf_image
     self.image = self.empty_image
     self.has_box = False
-    self.hitbox = pygame.Rect(x, y+ 30, TILE_SIZE, SHELF_HEIGHT-6)
+    self.hitbox = pygame.Rect(x, y, TILE_SIZE, TILE_SIZE)
     self.shadow_image = SHELF_SHADOW
 
 
