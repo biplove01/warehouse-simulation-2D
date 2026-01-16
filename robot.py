@@ -128,13 +128,11 @@ class Robot(pygame.Rect):
   def handle_physics(self, obstracles):
 
     # move horizontally
-    self.x += self.velocity_x
+    self.x += ROBOT_DISTANCE
     if self.left < 0:
       self.left = 0
-      self.velocity_x = 0
     elif self.right > GAME_WIDTH:
       self.right = GAME_WIDTH
-      self.velocity_x = 0
 
     for obj in obstracles:
       hitbox = getattr(obj, 'hitbox', obj)
@@ -143,16 +141,13 @@ class Robot(pygame.Rect):
             self.right = hitbox.left
         elif self.velocity_x < 0:
             self.left = hitbox.right
-        self.velocity_x = 0
 
     # move vertically
-    self.y += self.velocity_y
+    self.y += ROBOT_DISTANCE
     if self.top < 0:
       self.top = 0
-      self.velocity_y = 0
     elif self.bottom > GAME_HEIGHT:
       self.bottom = GAME_HEIGHT
-      self.velocity_y = 0
 
     for obj in obstracles:
       hitbox = getattr(obj, 'hitbox', obj)
@@ -161,10 +156,3 @@ class Robot(pygame.Rect):
             self.bottom = hitbox.top
         elif self.velocity_y < 0:
             self.top = hitbox.bottom
-        self.velocity_y = 0
-
-    self.velocity_x *= FRICTION
-    self.velocity_y *= FRICTION
-
-    if abs(self.velocity_x) < 0.1: self.velocity_x = 0
-    if abs(self.velocity_y) < 0.1: self.velocity_y = 0
