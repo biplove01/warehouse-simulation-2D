@@ -44,52 +44,85 @@ class Robot(pygame.Rect):
     if self.loaded:
       return
 
+    margin = 30
+
     for shelf in shelves:
       if not shelf.has_box:
         continue
 
-      # Use VISUAL dimensions for interaction
+      # visual dimensions for interaction
       shelf_visual_bottom = shelf.y + SHELF_IMAGE_HEIGHT
       shelf_visual_top = shelf.y
       shelf_right = shelf.x + TILE_SIZE
       shelf_left = shelf.x
 
-      dx = abs(self.centerx - (shelf.x + TILE_SIZE // 2))
-      dy = abs(self.centery - (shelf.y + SHELF_IMAGE_HEIGHT // 2))
+      dx = abs(self.centerx - (shelf.x + TILE_SIZE // 2))           # horizontal center of robot - hor center of shelf
+      dy = abs(self.centery - (shelf.y + SHELF_IMAGE_HEIGHT // 2))  # vertical center of robot - ver center of shelf
 
       in_front = False
-      margin = 15  # tolerance in pixels
 
       if self.direction == 'up':
-          # Robot should be just below the visible shelf
-          if (self.top >= shelf_visual_bottom - margin and
-              self.top <= shelf_visual_bottom + margin and
-              dx < TILE_SIZE // 2):
-              in_front = True
+        if (self.top >= shelf_visual_bottom - margin and self.top <= shelf_visual_bottom + margin and dx < TILE_SIZE // 2):
+          in_front = True
       elif self.direction == 'down':
-          if (self.bottom >= shelf_visual_top + margin and
-              dx < TILE_SIZE // 2):
-              in_front = True
+        if (self.bottom >= shelf_visual_top + margin and dx < TILE_SIZE // 2):
+          in_front = True
       elif self.direction == 'left':
-          if (self.right >= shelf_right - margin and
-              self.right <= shelf_right + margin and
-              dy < SHELF_IMAGE_HEIGHT // 2):
-              in_front = True
+        if (shelf_right - margin <= self.left <= shelf_right + margin and self.bottom > shelf.y and self.top < shelf.y + SHELF_IMAGE_HEIGHT):
+            in_front = True
+
       elif self.direction == 'right':
-          if (self.left <= shelf_left + margin and
-              self.left >= shelf_left - margin and
-              dy < SHELF_IMAGE_HEIGHT // 2):
-              in_front = True
+        if (shelf_left - margin <= self.right <= shelf_left + margin and self.bottom > shelf.y and self.top < shelf.y + SHELF_IMAGE_HEIGHT):
+            in_front = True
 
       if in_front:
-        print("PICKING UP BOX!")
         self.loaded = True
         shelf.has_box = False
         shelf.image = shelf.empty_image
         self.update_image()
-        print(f"Robot now loaded: {self.loaded}")
+        print("Box picked from shelf!")
         break
 
+  def drop_box(self, dropoff_platforms):
+    if not self.loaded:
+      return False
+
+    margin = 15
+
+    for platform in dropoff_platforms:
+      dx = abs(self.centerx - (platform.centerx + TILE_SIZE * 2))                 # horiz center of robot - horiz center of platform
+      dy = abs(self.centery - (platform.centery + CHARGE_STATION_HEIGHT // 2))    # verti center of robot - verti center of platform
+
+      hitbox = platform.hitbox
+      in_position = False
+
+      if self.direction == 'down':
+          if (platform.top - margin <= self.bottom <= platform.top + margin and dx < (3* TILE_SIZE) // 2):
+              in_position = True
+
+      elif self.direction == 'up':
+          if (platform.bottom - margin <= self.top <= platform.bottom + margin and dx < (3* TILE_SIZE) // 2):
+              in_position = True
+
+      elif self.direction == 'right':
+        # Robot left of platform, facing right
+        if (hitbox.left - margin <= self.right <= hitbox.left + margin and
+            self.bottom > hitbox.top and self.top < hitbox.bottom):
+            in_position = True
+
+      elif self.direction == 'left':
+        # Robot right of platform, facing left
+        if (hitbox.right - margin <= self.left <= hitbox.right + margin and
+            self.bottom > hitbox.top and self.top < hitbox.bottom):
+            in_position = True
+
+
+      if in_position:
+        self.loaded = False
+        self.update_image()
+        return True
+
+      return False
 
 
   def handle_physics(self, obstracles):

@@ -76,8 +76,7 @@ def create_map():
   dropoff_platform = DropoffPlatform(x_dropoff, y_dropoff, DROP_OFF_PLATFORM_IMAGE)
   dropoff_platforms.append(dropoff_platform)
 
-
-  # randomly make shelf have box
+   # randomly make shelf have box
   box_shelf = random.choice(shelves)
   box_shelf.has_box = True
   box_shelf.image = box_shelf.loaded_image

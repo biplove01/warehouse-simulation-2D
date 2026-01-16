@@ -32,3 +32,4 @@ class DropoffPlatform(pygame.Rect):
   def __init__(self, x, y, image):
     pygame.Rect.__init__(self, x, y, TILE_SIZE, CHARGE_STATION_HEIGHT)
     self.image = image
+    self.hitbox = pygame.Rect(x, y, 4*(TILE_SIZE + TILE_GAP), CHARGE_STATION_HEIGHT)

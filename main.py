@@ -1,5 +1,6 @@
 import pygame
 from sys import exit
+import random
 
 from constants import *
 from world import create_map
@@ -10,6 +11,8 @@ window = pygame.display.set_mode((GAME_WIDTH, GAME_HEIGHT))
 pygame.display.set_caption("Warehouse Simulation")
 pygame.display.set_icon(ROBOT_IMAGE_SIDE)
 clock = pygame.time.Clock()
+
+score = 0
 
 
 robot = Robot()
@@ -36,6 +39,14 @@ def render():
   pygame.display.update()
 
 
+def respawn_box(passed_shelves):
+    empty_shelves = [shelf for shelf in passed_shelves if not shelf.has_box]
+
+    if empty_shelves:
+        new_box_shelf = random.choice(empty_shelves)
+        new_box_shelf.has_box = True
+        new_box_shelf.image = new_box_shelf.loaded_image
+
 
 # GAME STARTS HERE
 
@@ -48,10 +59,20 @@ while True:
   keys = pygame.key.get_pressed()
 
   if keys[pygame.K_e]:
-    robot.pickup_box(shelves)
+    if robot.loaded:
+      if robot.drop_box(dropoff_platforms):
+        score += 1
+        print(f"Total score: {score}")
+        respawn_box(shelves)
+    else:
+      robot.pickup_box(shelves)
+
+  if keys[pygame.K_SPACE]:
+    respawn_box(shelves)
 
   robot.handle_inputs()
   robot.handle_physics(shelves)
+  robot.handle_physics(dropoff_platforms)
   render()
 
   clock.tick(60)
