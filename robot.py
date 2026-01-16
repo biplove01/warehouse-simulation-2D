@@ -168,3 +168,5 @@ class Robot(pygame.Rect):
 
     if abs(self.velocity_x) < 0.1: self.velocity_x = 0
     if abs(self.velocity_y) < 0.1: self.velocity_y = 0
+
+# hehe
