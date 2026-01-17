@@ -18,10 +18,11 @@ def create_map():
 
   # Horizontal shelves (vertical stacks)
   for col in range(5, 17):  # 12 columns starting at col 5
-      for row_offset in [0, 3, 4, 7, 8, 11, 12]:  # approximate your spacing
+      for row_offset in [0, 3, 4, 7, 8, 11, 12]:
           x, y = grid_to_pixel(col, row_offset)
           shelf = Shelf(x, y, SHELF_IMAGE_EMPTY, SHELF_IMAGE_FILLED)
           shelves.append(shelf)
+
 
   # Left vertical shelves
   for row in range(2, 11):

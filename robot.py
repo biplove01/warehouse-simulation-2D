@@ -10,6 +10,7 @@ class Robot():
     self.loaded = False
     self.update_image()
 
+
   def _grid_to_pixel_centered(self, gx, gy):
     base_x = PADDING_BORDER + gx * GRID_SPACING
     base_y = PADDING_BORDER + gy * GRID_SPACING
@@ -102,7 +103,6 @@ class Robot():
         shelf.has_box = False
         shelf.image = shelf.empty_image
         self.update_image()
-        print("Box picked up!")
         break
 
 
