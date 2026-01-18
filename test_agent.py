@@ -10,7 +10,8 @@ agent = DualQAgent(env.action_space.n)
 
 agent.load_tables(DATA_FOLDER, FILE_NAME)
 
-agent.epsilon = 0.1
+agent.epsilon = 0.01
+# agent.epsilon = 0.1
 
 EPISODES = 20
 
