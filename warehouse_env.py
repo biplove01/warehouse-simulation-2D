@@ -59,10 +59,10 @@ class WarehouseEnv(gym.Env):
         blocked.add((gx, gy))
 
     while True:
-        # random_x = np.random.randint(0, GRID_WIDTH)
-        # random_y = np.random.randint(0, GRID_HEIGHT)
-        random_x = np.random.randint(0, 1)
-        random_y = np.random.randint(7, GRID_HEIGHT-3)
+        random_x = np.random.randint(0, GRID_WIDTH)
+        random_y = np.random.randint(0, GRID_HEIGHT)
+        # random_x = np.random.randint(3, 6)
+        # random_y = np.random.randint(GRID_HEIGHT - 1, GRID_HEIGHT)
         if (random_x, random_y) not in blocked:
           break
 
@@ -100,7 +100,7 @@ class WarehouseEnv(gym.Env):
 
 
   def step(self, action):
-    self.reward -= 0.1
+    self.reward -= 0.3
     terminated = False
     terncated = False
 
