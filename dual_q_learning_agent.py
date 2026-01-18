@@ -15,7 +15,7 @@ class DualQAgent:
         self.epsilon = 0.25
         self.eps_decay = 0.99999
         # self.eps_min = 0.02
-        self.eps_min = 0.005
+        self.eps_min = 0.001
 
     def _get_state(self, obs):
         robot_direction = int(obs[7])
