@@ -59,10 +59,12 @@ class WarehouseEnv(gym.Env):
         blocked.add((gx, gy))
 
     while True:
-        random_x = np.random.randint(0, GRID_WIDTH)
-        random_y = np.random.randint(0, GRID_HEIGHT)
+        # random_x = np.random.randint(0, GRID_WIDTH)
+        # random_y = np.random.randint(0, GRID_HEIGHT)
+        random_x = np.random.randint(0, 1)
+        random_y = np.random.randint(7, GRID_HEIGHT-3)
         if (random_x, random_y) not in blocked:
-            break
+          break
 
     self.robot = Robot(start_x=random_x, start_y=random_y)
 
@@ -136,7 +138,8 @@ class WarehouseEnv(gym.Env):
       else:
         if not self.robot.pickup_box(self.shelves):
           # self.reward -= 8          # false pickup penalty
-          self.reward -= 25          # false pickup penalty
+          # self.reward -= 25          # false pickup penalty
+          self.reward -= 50          # false pickup penalty
         else:
           self.reward += 50         # pickup reward
 
