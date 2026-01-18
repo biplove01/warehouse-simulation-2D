@@ -7,7 +7,7 @@ agent = DualQAgent(env.action_space.n)
 
 
 SAVE_INTERVAL = 500
-EPISODES = 20_000
+EPISODES = 10_000
 
 DATA_FOLDER = "training_data"
 FILE_NAME = "warehouse_data.pkl"

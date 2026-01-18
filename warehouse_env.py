@@ -127,7 +127,7 @@ class WarehouseEnv(gym.Env):
     if action == 4:
       if self.robot.loaded:
         if not self.robot.drop_box(self.dropoff_platforms):
-          self.reward -= 8          # false drop penalty
+          self.reward -= 25          # false drop penalty
         else:
           self.reward += 200        # drop reward
           terminated = True
@@ -135,7 +135,8 @@ class WarehouseEnv(gym.Env):
 
       else:
         if not self.robot.pickup_box(self.shelves):
-          self.reward -= 8          # false pickup penalty
+          # self.reward -= 8          # false pickup penalty
+          self.reward -= 25          # false pickup penalty
         else:
           self.reward += 50         # pickup reward
 
@@ -162,7 +163,7 @@ class WarehouseEnv(gym.Env):
     self.state_history.append(state_tuple)
     if len(self.state_history) == self.state_history.maxlen:
       if list(self.state_history).count(state_tuple) >= 3:
-        self.reward -= 60
+        self.reward -= 100
 
 
     # negative reward on timeout

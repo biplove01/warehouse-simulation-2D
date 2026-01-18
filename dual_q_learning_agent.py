@@ -7,13 +7,13 @@ class DualQAgent:
     def __init__(self, action_dim):
         self.action_dim = action_dim
         self.q_table = {}                   # ← single table now
-        self.lr = 0.75
+        self.lr = 0.1
         self.gamma = 0.95
         # self.epsilon = 1.0
         self.epsilon = 0.45
-        self.eps_decay = 0.99999
+        self.eps_decay = 0.99998
         # self.eps_min = 0.02
-        self.eps_min = 0.15
+        self.eps_min = 0.03
 
     def _get_state(self, obs):
         robot_direction = int(obs[7])
