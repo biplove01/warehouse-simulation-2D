@@ -162,7 +162,7 @@ class WarehouseEnv(gym.Env):
     self.state_history.append(state_tuple)
     if len(self.state_history) == self.state_history.maxlen:
       if list(self.state_history).count(state_tuple) >= 3:
-        self.reward -= 30
+        self.reward -= 60
 
 
     # negative reward on timeout
