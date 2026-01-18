@@ -1,17 +1,16 @@
 from warehouse_env import WarehouseEnv
 from dual_q_learning_agent import DualQAgent
+from collections import deque
 
 env = WarehouseEnv(render_mode=None)
 agent = DualQAgent(env.action_space.n)
 
 
-SAVE_INTERVAL = 2000
-EPISODES = 6000
+SAVE_INTERVAL = 500
+EPISODES = 10_000
 
 DATA_FOLDER = "training_data"
 FILE_NAME = "warehouse_data.pkl"
-
-# load existing knowledge if available
 agent.load_tables(DATA_FOLDER, FILE_NAME)
 
 
@@ -23,31 +22,33 @@ for ep in range(1, EPISODES + 1):
     done = False
 
     total_reward = 0.0
+    successfully_dropped = False
+
 
     while not done:
       action = agent.select_action(obs)
-      next_obs, reward, term, trunc, _ = env.step(action)
 
-      total_reward += reward
+      next_obs, term, trunc, _ = env.step(action)
 
-      agent.update(obs, action, reward, next_obs)
+      total_reward += env.reward
+
+      agent.update(obs, action, env.reward, next_obs)
+
       obs = next_obs
       done = term or trunc
+      successfully_dropped = term     # just for debugging
       steps += 1
 
-      if steps > 300:
-        done = True
-        reward -= 300
 
-
-    if ep % 100 == 0:
+    if ep % 2 == 0:
       print(f"Ep {ep} | total_reward: {total_reward:.4f} | steps: {steps} | "
-      f"states: pickup {len(agent.q_pickup)}, drop {len(agent.q_dropoff)}")
+      f"states: {len(agent.q_table)} Sucess: {successfully_dropped}")
 
     if ep % SAVE_INTERVAL == 0:
       print(f"Episode {ep}: Saving checkpoint...")
       agent.save_tables(DATA_FOLDER, FILE_NAME)
-      print(f"Current States - Pickup: {len(agent.q_pickup)}, Dropoff: {len(agent.q_dropoff)}")
+
+      print(f"Current States {len(agent.q_table)}")
 
 # Final save
 agent.save_tables(DATA_FOLDER, FILE_NAME)

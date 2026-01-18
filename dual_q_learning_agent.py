@@ -1,93 +1,71 @@
-import numpy as np
-import random
 import pickle
+import random
+import numpy as np
 import os
 
 class DualQAgent:
-  def __init__(self, action_dim):
-    self.action_dim = action_dim
-    # Table 1: State -> [RobotX, RobotY, BoxX, BoxY]
-    self.q_pickup = {}
-    # Table 2: State -> [RobotX, RobotY, DropX, DropY]
-    self.q_dropoff = {}
+    def __init__(self, action_dim):
+        self.action_dim = action_dim
+        self.q_table = {}                   # ← single table now
+        self.lr = 0.05
+        self.gamma = 0.95
+        # self.epsilon = 1.0
+        self.epsilon = 0.65
+        self.eps_decay = 0.99995
+        self.eps_min = 0.01
 
-    self.lr = 0.1
-    self.gamma = 0.95
-    self.epsilon = 1.0 # for training
-    # self.epsilon = 0 # for testing
-    self.eps_decay = 0.9995
-    self.eps_min = 0.05
+    def _get_state(self, obs):
+        robot_direction = int(obs[7])
+        loaded = int(obs[2])                # 0 or 1
+        rx, ry     = int(obs[0]), int(obs[1])
+        bx, by     = int(obs[3]), int(obs[4])
+        dx, dy     = int(obs[5]), int(obs[6])
+        return (rx, ry, loaded, robot_direction, bx, by, dx, dy)
 
+    def select_action(self, obs):
+        state = self._get_state(obs)
+        if random.random() < self.epsilon:
+            return random.randint(0, self.action_dim - 1)
+        if state not in self.q_table:
+            self.q_table[state] = np.zeros(self.action_dim)
+        return int(np.argmax(self.q_table[state]))
 
-  def _get_table_and_state(self, obs):
+    def update(self, obs, action, reward, next_obs, done=False):
+        state      = self._get_state(obs)
+        next_state = self._get_state(next_obs)
 
-    robot_direction = int(obs[7])
+        if state not in self.q_table:
+            self.q_table[state] = np.zeros(self.action_dim)
+        if next_state not in self.q_table:
+            self.q_table[next_state] = np.zeros(self.action_dim)
 
-    loaded = bool(obs[2])
-    rx, ry = int(obs[0]), int(obs[1])
-    bx, by = int(obs[3]), int(obs[4])
-    dx, dy = int(obs[5]), int(obs[6])
-    if not loaded:
-        return self.q_pickup, (rx, ry, robot_direction, bx, by)
-    else:
-        return self.q_dropoff, (rx, ry, robot_direction, dx, dy)
+        old_value = self.q_table[state][action]
+        next_max  = 0 if done else np.max(self.q_table[next_state])
+        target    = reward + self.gamma * next_max
+        self.q_table[state][action] = old_value + self.lr * (target - old_value)
 
+        if self.epsilon > self.eps_min:
+            self.epsilon *= self.eps_decay
 
-  def select_action(self, obs):
-      table, state = self._get_table_and_state(obs)
-      # print("State:", state)          # ← add this
-      if random.random() < self.epsilon:
-          action = random.randint(0, self.action_dim - 1)
-      else:
-          if state not in table:
-              table[state] = np.zeros(self.action_dim)
-          action = int(np.argmax(table[state]))
-      # print("Chosen action:", action)  # ← add this
-      return action
+    def save_tables(self, folder, filename):
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+        path = os.path.join(folder, filename)
+        data = {
+            "q_table": self.q_table,
+            "epsilon": self.epsilon
+        }
+        with open(path, "wb") as f:
+            pickle.dump(data, f)
+        print(f"Saved to {path}")
 
-
-  def update(self, obs, action, reward, next_obs):
-    table, state = self._get_table_and_state(obs)
-    next_table, next_state = self._get_table_and_state(next_obs)
-
-    if state not in table:
-      table[state] = np.zeros(self.action_dim)
-    if next_state not in next_table:
-      next_table[next_state] = np.zeros(self.action_dim)
-
-    # Q-update
-    old_value = table[state][action]
-    next_max = np.max(next_table[next_state])
-
-    table[state][action] = old_value + self.lr * (reward + self.gamma * next_max - old_value)
-
-    if self.epsilon > self.eps_min:
-      self.epsilon *= self.eps_decay
-
-
-  def save_tables(self, folder, filename):
-    if not os.path.exists(folder):
-      os.makedirs(folder)
-
-    path = os.path.join(folder, filename)
-    data = {
-      "pickup": self.q_pickup,
-      "dropoff": self.q_dropoff,
-      "epsilon": self.epsilon
-    }
-    with open(path, "wb") as f:
-      pickle.dump(data, f)
-    print(f"Tables saved to {path}")
-
-
-  def load_tables(self, folder, filename):
-    path = os.path.join(folder, filename)
-    if os.path.exists(path):
-      with open(path, "rb") as f:
-        data = pickle.load(f)
-        self.q_pickup = data["pickup"]
-        self.q_dropoff = data["dropoff"]
-        self.epsilon = data.get("epsilon", 1.0) # commented for testing
-      print(f"Tables loaded from {path}")
-    else:
-      print("No saved data found in folder. Starting fresh.")
+    def load_tables(self, folder, filename):
+        path = os.path.join(folder, filename)
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                data = pickle.load(f)
+            self.q_table  = data["q_table"]
+            self.epsilon  = data.get("epsilon", 1.0)
+            print(f"Loaded from {path}")
+        else:
+            print("No saved data found.")

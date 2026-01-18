@@ -10,8 +10,7 @@ agent = DualQAgent(env.action_space.n)
 
 agent.load_tables(DATA_FOLDER, FILE_NAME)
 
-# 🔒 disable exploration
-agent.epsilon = 0.0
+agent.epsilon = 0.05
 
 EPISODES = 20
 
@@ -24,9 +23,9 @@ for ep in range(EPISODES):
         action = agent.select_action(obs)
         print("Action:", action)
 
-        obs, reward, terminated, truncated, _ = env.step(action)
+        obs, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
-        total_reward += reward
+        total_reward += env.reward
         time.sleep(0.05)
 
     print(f"Episode {ep+1} | Reward: {total_reward}")

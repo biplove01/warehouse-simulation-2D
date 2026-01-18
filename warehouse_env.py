@@ -36,14 +36,18 @@ class WarehouseEnv(gym.Env):
 
     self.window = None
     self.clock = None
+    self.current_step = 0
+    self.reward = 0
+    self.max_steps = 800
 
 
   def reset(self, seed=None, options=None):
     super().reset(seed=seed)
 
-    self.robot = Robot(start_x=0, start_y=0)
-    self.shelves, self.charge_stations, self.dropoff_platforms  = create_map()
     self.score = 0
+    self.current_step = 0
+    self.reward = 0
+    self.state_history = deque(maxlen=8)
 
     self.shelves, self.charge_stations, self.dropoff_platforms = create_map()
 
@@ -74,7 +78,6 @@ class WarehouseEnv(gym.Env):
   def _get_obs(self):
 
     box_pos = [0, 0]
-
     for s in self.shelves:
       if s.has_box:
         box_pos = [round((s.x - PADDING_BORDER)/GRID_SPACING),
@@ -95,7 +98,7 @@ class WarehouseEnv(gym.Env):
 
 
   def step(self, action):
-    reward = -0.2
+    self.reward -= 0.1
     terminated = False
     terncated = False
 
@@ -118,50 +121,63 @@ class WarehouseEnv(gym.Env):
       dirs = ['up', 'down', 'left', 'right']
       moved = self.robot.handle_inputs_single(dirs[action], obstracles)
       if not moved:
-        reward = -2
+        self.reward = -2
 
 
     if action == 4:
       if self.robot.loaded:
-        if self.robot.drop_box(self.dropoff_platforms):
-          reward += 500       # drop reward
-          self.score += 1
+        if not self.robot.drop_box(self.dropoff_platforms):
+          self.reward -= 8          # false drop penalty
+        else:
+          self.reward += 200        # drop reward
           terminated = True
-
-          # respawn box
-          empty = [s for s in self.shelves if not s.has_box]
-          if empty:
-            target = random.choice(empty)
-            target.has_box = True
-            target.image = target.loaded_image
+          self.score += 1
 
       else:
-        old_loaded = self.robot.loaded
-        self.robot.pickup_box(self.shelves)
-        if self.robot.loaded and not old_loaded:
-          reward += 200      # pickup reward
+        if not self.robot.pickup_box(self.shelves):
+          self.reward -= 8          # false pickup penalty
+        else:
+          self.reward += 50         # pickup reward
 
 
     # target recalculation after action
     next_obs = self._get_obs()
     _, _, _, n_box_x, n_box_y, n_drop_x, n_drop_y, _  = next_obs
+    next_target_x = None
+    next_target_y = None
     if self.robot.loaded:
         next_target_x, next_target_y = n_drop_x, n_drop_y
     else:
         next_target_x, next_target_y = n_box_x, n_box_y
 
 
-    next_distance = self.shortest_path_dist(self.robot.grid_x, self.robot.grid_y, target_x, target_y)
+    next_distance = self.shortest_path_dist(self.robot.grid_x, self.robot.grid_y, next_target_x, next_target_y)
 
-    if next_distance < curr_distance:
-      reward += 5
-    else:
-      reward -= 2
+
+    # reward for moving close to the target
+    self.reward += 0.99 * (-next_distance) - (-curr_distance)
+
+    # negative reward for looping actions
+    state_tuple = tuple(next_obs.astype(int).tolist())
+    self.state_history.append(state_tuple)
+    if len(self.state_history) == self.state_history.maxlen:
+      if list(self.state_history).count(state_tuple) >= 3:
+        self.reward -= 30
+
+
+    # negative reward on timeout
+    self.current_step += 1
+    if self.current_step >= self.max_steps:
+      terncated = True
+      if not terminated:
+        self.reward -= 300
+
 
     if self.render_mode == 'human':
       self._render_frame()
 
-    return next_obs, reward, terminated, terncated, {}
+
+    return next_obs, terminated, terncated, {}
 
 
   def shortest_path_dist(self, start_x, start_y, goal_x, goal_y):
@@ -175,7 +191,7 @@ class WarehouseEnv(gym.Env):
       obstracles.add((gx, gy))
 
     queue = deque([(start_x, start_y, 0)])
-    visited = set([start_x, start_y])
+    visited = set([(start_x, start_y)])
 
     directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
     while queue:

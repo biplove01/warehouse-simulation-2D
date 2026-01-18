@@ -69,7 +69,7 @@ class Robot():
   def pickup_box(self, shelves):
 
     if self.loaded:
-      return
+      return False
 
     robot_rect = self.get_pixel_rect()
     margin = 30
@@ -103,7 +103,9 @@ class Robot():
         shelf.has_box = False
         shelf.image = shelf.empty_image
         self.update_image()
-        break
+        return True
+
+    return False
 
 
   def drop_box(self, dropoff_platforms):
