@@ -21,7 +21,7 @@ class WarehouseEnv(gym.Env):
 
     # Observation: [robot_x, robot_y, robot_loaded, nearest_box_x, nearest_box_y, dropofff_x dropoff_y]
     self.observation_space = spaces.Box(
-                                        low=np.array([0, 0, 0, 0, 0, 0, 0, 8], dtype=np.float32),
+                                        low=np.array([0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32),
                                         high=np.array([
                                             GRID_WIDTH - 1,
                                             GRID_HEIGHT - 1,
