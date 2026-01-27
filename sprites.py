@@ -2,11 +2,6 @@ import pygame
 from constants import *
 
 
-# class Box(pygame.Rect):
-#   def __init__(self, x, y, image):
-#     pygame.Rect.__init__(self, x, y, BOX_WIDTH, BOX_HEIGHT)
-#     self.image = image
-
 # SHELF
 class Shelf(pygame.Rect):
   def __init__(self, x, y, empty_shelf_image, loaded_shelf_image):

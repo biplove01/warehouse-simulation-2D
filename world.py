@@ -43,8 +43,8 @@ def create_map():
     dropoff_platforms.append(dropoff_platform)
 
   # Random box
-  box_shelf = random.choice(shelves)
-  box_shelf.has_box = True
-  box_shelf.image = box_shelf.loaded_image
+#   box_shelf = random.choice(shelves)
+#   box_shelf.has_box = True
+#   box_shelf.image = box_shelf.loaded_image
 
   return shelves, charge_stations, dropoff_platforms

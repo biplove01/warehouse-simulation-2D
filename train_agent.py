@@ -7,11 +7,14 @@ agent = DualQAgent(env.action_space.n)
 
 
 SAVE_INTERVAL = 500
-EPISODES = 500
+EPISODES = 10_000
 
 DATA_FOLDER = "training_data"
 FILE_NAME = "warehouse_data.pkl"
 agent.load_tables(DATA_FOLDER, FILE_NAME)
+
+
+robot_prev_state = env.reset()
 
 
 for ep in range(1, EPISODES + 1):
