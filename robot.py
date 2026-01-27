@@ -8,6 +8,7 @@ class Robot():
     self.grid_y = start_y
     self.direction = 'up'
     self.loaded = False
+    self.assigned_target = None
     self.update_image()
 
 
@@ -24,6 +25,7 @@ class Robot():
       self.image = ROBOT_IMAGE_SIDE_BOX if self.loaded else ROBOT_IMAGE_SIDE
     elif self.direction == 'up' or self.direction =='down':
       self.image = ROBOT_IMAGE_VERTICAL_BOX if self.loaded else ROBOT_IMAGE_VERTICAL
+
 
   def get_pixel_rect(self):
     x = PADDING_BORDER + self.grid_x * GRID_SPACING

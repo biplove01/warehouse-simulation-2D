@@ -2,28 +2,25 @@ import pickle
 import random
 import numpy as np
 import os
+import copy
 
 class DualQAgent:
     def __init__(self, action_dim):
         self.action_dim = action_dim
-        self.q_table = {} 
-        self.lr = 0.50
+        self.q_table = {}
+        self.lr = 0.70
         self.gamma = 0.95
-        self.epsilon = 0.55  
+        self.epsilon = 0.75
         self.eps_decay = 0.9999995
-        self.eps_min = 0.01
-
+        self.eps_min = 0.05
 
     def _get_state(self, obs):
-        # Dropoff position is fixed in the current environment → no need to include dx, dy
-        # This slightly reduces memory usage and keeps the state representation cleaner
         robot_direction = int(obs[7])
-        loaded = int(obs[2])  # 0 or 1
+        loaded = int(obs[2])
         rx, ry = int(obs[0]), int(obs[1])
         bx, by = int(obs[3]), int(obs[4])
-        return (rx, ry, loaded, robot_direction, bx, by)
-
-
+        other_loaded = int(obs[8])
+        return (rx, ry, loaded, robot_direction, bx, by, other_loaded)
 
     def select_action(self, obs):
         state = self._get_state(obs)
@@ -32,8 +29,6 @@ class DualQAgent:
         if state not in self.q_table:
             self.q_table[state] = np.zeros(self.action_dim)
         return int(np.argmax(self.q_table[state]))
-    
-
 
     def update(self, obs, action, reward, next_obs, done=False):
         state = self._get_state(obs)
@@ -42,15 +37,12 @@ class DualQAgent:
             self.q_table[state] = np.zeros(self.action_dim)
         if next_state not in self.q_table:
             self.q_table[next_state] = np.zeros(self.action_dim)
-
         old_value = self.q_table[state][action]
         next_max = 0 if done else np.max(self.q_table[next_state])
         target = reward + self.gamma * next_max
         self.q_table[state][action] = old_value + self.lr * (target - old_value)
-
         if self.epsilon > self.eps_min:
             self.epsilon *= self.eps_decay
-
 
     def save_tables(self, folder, filename):
         if not os.path.exists(folder):
@@ -64,7 +56,6 @@ class DualQAgent:
             pickle.dump(data, f)
         print(f"Saved to {path}")
 
-
     def load_tables(self, folder, filename):
         path = os.path.join(folder, filename)
         if os.path.exists(path):
@@ -75,4 +66,3 @@ class DualQAgent:
             print(f"Loaded from {path}")
         else:
             print("No saved data found.")
-

@@ -7,6 +7,8 @@ from world import create_map
 from constants import *
 from robot import Robot
 import random
+from types import SimpleNamespace  # For dummy obstacles
+
 
 class WarehouseEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
@@ -14,29 +16,26 @@ class WarehouseEnv(gym.Env):
     def __init__(self, render_mode=None):
         super().__init__()
         self.render_mode = render_mode
-        self.action_space = spaces.Discrete(6)
+        self.num_robots = 2
+        self.action_space = spaces.Discrete(6)  # 0-3 move, 4 interact, 5 no-op
         self.observation_space = spaces.Box(
-            low=np.array([0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32),
+            low=np.array([0, 0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32),
             high=np.array([
-                GRID_WIDTH - 1,
-                GRID_HEIGHT - 1,
-                1,
-                GRID_WIDTH - 1,
-                GRID_HEIGHT - 1,
-                GRID_WIDTH - 1,
-                GRID_HEIGHT - 1,
-                3
+                GRID_WIDTH - 1, GRID_HEIGHT - 1, 1,
+                GRID_WIDTH - 1, GRID_HEIGHT - 1,
+                GRID_WIDTH - 1, GRID_HEIGHT - 1,
+                3,
+                1
             ], dtype=np.float32)
         )
         self.window = None
         self.clock = None
         self.current_step = 0
-        self.reward = 0
-        self.max_steps = 10000
+        self.reward = 0.0
+        self.max_steps = 20000
         self.score = 0
-
-        # 10 deliveries for training episodes, very high for human testing
-        self.goal_deliveries = 10 if render_mode is None else 100
+        self.goal_deliveries = 20 if render_mode is None else 200
+        self.target_queue = deque()
 
     def _get_shelf_at(self, gx, gy):
         for s in self.shelves:
@@ -49,28 +48,75 @@ class WarehouseEnv(gym.Env):
     def _is_adjacent(self, rx, ry, tx, ty):
         return abs(rx - tx) + abs(ry - ty) == 1
 
+    def _get_idle_target(self, rx, ry):
+        if self.charge_grids:
+            # Nearest charging station
+            return min(self.charge_grids, key=lambda p: abs(p[0] - rx) + abs(p[1] - ry))
+        return (rx, ry)
+
+    def _try_assign_tasks(self):
+        """Assign new tasks from the shared queue to free robots (FIFO order)"""
+        for robot in self.robots:
+            if not robot.loaded and robot.assigned_target is None and self.target_queue:
+                robot.assigned_target = self.target_queue.popleft()
+
+    def _get_obs(self, robot):
+        if robot.loaded:
+            tx, ty = self.dropoff_gx, self.dropoff_gy
+        elif robot.assigned_target is not None:
+            tx, ty = robot.assigned_target
+        else:
+            tx, ty = self._get_idle_target(robot.grid_x, robot.grid_y)
+
+        other_loaded = 1.0 if any(r.loaded for r in self.robots if r != robot) else 0.0
+        dir_num = {'up': 0, 'down': 1, 'left': 2, 'right': 3}[robot.direction]
+
+        return np.array([
+            robot.grid_x, robot.grid_y,
+            float(robot.loaded),
+            tx, ty,
+            self.dropoff_gx, self.dropoff_gy,
+            dir_num,
+            other_loaded
+        ], dtype=np.float32)
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.score = 0
         self.current_step = 0
-        self.reward = 0
+        self.reward = 0.0
         self.state_history = deque(maxlen=8)
+
         self.shelves, self.charge_stations, self.dropoff_platforms = create_map()
 
-        # All shelves start empty
+        # Static blocked grids
+        self.static_blocked = set()
+        for obj in self.shelves + self.dropoff_platforms:
+            gx = round((obj.x - PADDING_BORDER) / GRID_SPACING)
+            gy = round((obj.y - PADDING_BORDER) / GRID_SPACING)
+            self.static_blocked.add((gx, gy))
+
+        # Charge grids
+        self.charge_grids = set()
+        for obj in self.charge_stations:
+            gx = round((obj.x - PADDING_BORDER) / GRID_SPACING)
+            gy = round((obj.y - PADDING_BORDER) / GRID_SPACING)
+            self.charge_grids.add((gx, gy))
+
+        # Reset shelves
         for s in self.shelves:
             if hasattr(s, 'has_box'):
                 s.has_box = False
 
-        # Target queue
+        # Shared unassigned target queue
         self.target_queue = deque()
 
-        # Central dropoff target
+        # Central dropoff
         central_drop = self.dropoff_platforms[2]
         self.dropoff_gx = round((central_drop.x - PADDING_BORDER) / GRID_SPACING)
         self.dropoff_gy = round((central_drop.y - PADDING_BORDER) / GRID_SPACING)
 
-        # Auto-spawn 10 random boxes only during training (render_mode=None)
+        # Auto-spawn initial tasks for training
         if self.render_mode is None:
             shelf_positions = []
             for s in self.shelves:
@@ -78,122 +124,127 @@ class WarehouseEnv(gym.Env):
                 gy = round((s.y - PADDING_BORDER) / GRID_SPACING)
                 shelf_positions.append((s, gx, gy))
             random.shuffle(shelf_positions)
-            num_to_spawn = 10  # Fixed typo here
+            num_to_spawn = 20
             for i in range(min(num_to_spawn, len(shelf_positions))):
                 s, gx, gy = shelf_positions[i]
                 s.has_box = True
                 self.target_queue.append((gx, gy))
 
-        # Blocked cells for robot spawn
-        blocked = set()
-        for obj in self.shelves + self.dropoff_platforms + self.charge_stations:
-            gx = round((obj.x - PADDING_BORDER) / GRID_SPACING)
-            gy = round((obj.y - PADDING_BORDER) / GRID_SPACING)
-            blocked.add((gx, gy))
+        # Spawn robots
+        spawn_positions = []
+        while len(spawn_positions) < self.num_robots:
+            rx = np.random.randint(0, GRID_WIDTH)
+            ry = np.random.randint(0, GRID_HEIGHT)
+            pos = (rx, ry)
+            if pos not in self.static_blocked and pos not in spawn_positions:
+                spawn_positions.append(pos)
 
-        while True:
-            random_x = np.random.randint(0, GRID_WIDTH)
-            random_y = np.random.randint(0, GRID_HEIGHT)
-            if (random_x, random_y) not in blocked:
-                break
+        self.robots = []
+        for rx, ry in spawn_positions:
+            robot = Robot(start_x=rx, start_y=ry)
+            robot.assigned_target = None  # Ensure clean start
+            self.robots.append(robot)
 
-        self.robot = Robot(start_x=random_x, start_y=random_y)
+        # Assign initial tasks to free robots
+        self._try_assign_tasks()
 
-        observation = self._get_obs()
+        obs_list = [self._get_obs(robot) for robot in self.robots]
         info = {}
+
         if self.render_mode == 'human':
             self._render_frame()
-        return observation, info
 
-    def _get_obs(self):
-        if self.target_queue:
-            box_pos = [self.target_queue[0][0], self.target_queue[0][1]]
-        else:
-            box_pos = [self.robot.grid_x, self.robot.grid_y]
+        return obs_list, info
+    
 
-        return np.array([
-            self.robot.grid_x,
-            self.robot.grid_y,
-            float(self.robot.loaded),
-            box_pos[0], box_pos[1],
-            self.dropoff_gx, self.dropoff_gy,
-            {'up': 0, 'down': 1, 'left': 2, 'right': 3}[self.robot.direction]
-        ], dtype=np.float32)
-
-
-
-    def step(self, action):
-        self.reward = -0.3
+    def step(self, actions):
+        assert len(actions) == self.num_robots
+        self.reward = -0.3  # Team living penalty
         terminated = False
         truncated = False
-        obstacles = self.shelves + self.dropoff_platforms
-        moved = False
 
-        # Current target for shaping
-        if self.robot.loaded:
-            target_x, target_y = self.dropoff_gx, self.dropoff_gy
-        else:
-            if self.target_queue:
-                target_x, target_y = self.target_queue[0]
+        for i, robot in enumerate(self.robots):
+            action = actions[i]
+
+            # Dynamic obstacles (other robots)
+            other_positions = [(r.grid_x, r.grid_y) for j, r in enumerate(self.robots) if j != i]
+            dynamic_obs = []
+            for gx, gy in other_positions:
+                dummy = SimpleNamespace()
+                dummy.x = PADDING_BORDER + gx * GRID_SPACING
+                dummy.y = PADDING_BORDER + gy * GRID_SPACING
+                dynamic_obs.append(dummy)
+            current_obstacles = self.shelves + self.dropoff_platforms + dynamic_obs
+
+            # Personal target for shaping
+            if robot.loaded:
+                target_x, target_y = self.dropoff_gx, self.dropoff_gy
+            elif robot.assigned_target is not None:
+                target_x, target_y = robot.assigned_target
             else:
-                target_x, target_y = self.robot.grid_x, self.robot.grid_y
+                target_x, target_y = self._get_idle_target(robot.grid_x, robot.grid_y)
 
-        curr_distance = self.shortest_path_dist(self.robot.grid_x, self.robot.grid_y, target_x, target_y)
+            curr_distance = self.shortest_path_dist(robot.grid_x, robot.grid_y, target_x, target_y, set(other_positions))
 
-        if action < 4:
-            dirs = ['up', 'down', 'left', 'right']
-            moved = self.robot.handle_inputs_single(dirs[action], obstacles)
-            if not moved:
-                self.reward -= 2
+            moved = False
+            if action < 4:  # Move
+                dirs = ['up', 'down', 'left', 'right']
+                moved = robot.handle_inputs_single(dirs[action], current_obstacles)
+                if not moved:
+                    self.reward -= 2
 
-        elif action == 4:
-            if self.robot.loaded:
-                success = self.robot.drop_box(self.dropoff_platforms)
-                if success:
-                    self.reward += 200
-                    self.score += 1
-                    if self.target_queue:
-                        self.target_queue.popleft()
-                    if self.score >= self.goal_deliveries:
-                        terminated = True
-                else:
-                    self.reward -= 25
-            else:
-                if self.target_queue:
-                    tx, ty = self.target_queue[0]
-                    target_shelf = self._get_shelf_at(tx, ty)
-                    if (target_shelf and
-                        self._is_adjacent(self.robot.grid_x, self.robot.grid_y, tx, ty) and
-                        target_shelf.has_box):
-                        self.robot.loaded = True
-                        target_shelf.has_box = False
-                        target_shelf.image = target_shelf.empty_image
-                        self.reward += 50
+            elif action == 4:  # Interact
+                if robot.loaded:  # Drop
+                    success = robot.drop_box(self.dropoff_platforms)
+                    if success:
+                        self.reward += 200
+                        self.score += 1
+                        if self.score >= self.goal_deliveries:
+                            terminated = True
                     else:
-                        self.reward -= 50
-                else:
-                    self.reward -= 50
+                        self.reward -= 10
+                else:  # Pickup
+                    if robot.assigned_target is not None:
+                        tx, ty = robot.assigned_target
+                        shelf = self._get_shelf_at(tx, ty)
+                        if (shelf and self._is_adjacent(robot.grid_x, robot.grid_y, tx, ty) and
+                                shelf.has_box):
+                            robot.loaded = True
+                            shelf.has_box = False
+                            shelf.image = shelf.empty_image
+                            robot.assigned_target = None  # Task complete
+                            self.reward += 50
+                        else:
+                            self.reward -= 20
+                    else:
+                        self.reward -= 20  # No task to pick
 
-        elif action == 5:
-            moved = True 
-            if len(self.target_queue) > 0:
-                self.reward -= 5
+            elif action == 5:  # No-op
+                moved = True
+                has_active_goal = (robot.loaded or robot.assigned_target is not None)
+                if has_active_goal:
+                    self.reward -= 2
+                if len(self.target_queue) == 0 and (robot.grid_x, robot.grid_y) in self.charge_grids:
+                    self.reward += 0.2
 
-        # Next target/distance
-        if self.robot.loaded:
-            next_target_x, next_target_y = self.dropoff_gx, self.dropoff_gy
-        else:
-            if self.target_queue:
-                next_target_x, next_target_y = self.target_queue[0]
+
+            # Shaping reward after action
+            if robot.loaded:
+                next_target_x, next_target_y = self.dropoff_gx, self.dropoff_gy
+            elif robot.assigned_target is not None:
+                next_target_x, next_target_y = robot.assigned_target
             else:
-                next_target_x, next_target_y = self.robot.grid_x, self.robot.grid_y
+                next_target_x, next_target_y = self._get_idle_target(robot.grid_x, robot.grid_y)
 
-        next_distance = self.shortest_path_dist(self.robot.grid_x, self.robot.grid_y, next_target_x, next_target_y)
-        self.reward += 0.99 * (curr_distance - next_distance)
+            next_distance = self.shortest_path_dist(robot.grid_x, robot.grid_y, next_target_x, next_target_y, set(other_positions))
+            self.reward += 0.99 * (curr_distance - next_distance)
+
+        # Assign new tasks to any newly freed robots
+        self._try_assign_tasks()
 
         # Looping penalty
-        next_obs = self._get_obs()
-        state_tuple = tuple(next_obs.astype(int).tolist())
+        next_obs_list = [self._get_obs(robot) for robot in self.robots]
+        state_tuple = tuple(next_obs_list[0].astype(int).tolist())
         self.state_history.append(state_tuple)
         if len(self.state_history) == self.state_history.maxlen:
             if list(self.state_history).count(state_tuple) >= 3:
@@ -207,45 +258,39 @@ class WarehouseEnv(gym.Env):
         if self.render_mode == 'human':
             self._render_frame()
 
-        return next_obs, terminated, truncated, {}
+        return next_obs_list, self.reward, terminated, truncated, {}
+    
 
-    def shortest_path_dist(self, start_x, start_y, goal_x, goal_y):
-        obstacles = set()
-        for obj in self.shelves + self.dropoff_platforms:
-            gx = round((obj.x - PADDING_BORDER) / GRID_SPACING)
-            gy = round((obj.y - PADDING_BORDER) / GRID_SPACING)
-            obstacles.add((gx, gy))
-
+    def shortest_path_dist(self, start_x, start_y, goal_x, goal_y, extra_obstacles=set()):
+        if goal_x is None or goal_y is None:
+            return 9999
+        obstacles = self.static_blocked.copy()
+        obstacles.update(extra_obstacles)
         queue = deque([(start_x, start_y, 0)])
         visited = set([(start_x, start_y)])
         directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-
         while queue:
-            x, y,  dist = queue.popleft()
-
+            x, y, dist = queue.popleft()
             if (x == goal_x and y == goal_y) or (abs(x - goal_x) + abs(y - goal_y) == 1):
                 return dist
-
             for dx, dy in directions:
                 nx, ny = x + dx, y + dy
                 if (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT and
-                    (nx, ny) not in visited and (nx, ny) not in obstacles):
+                        (nx, ny) not in visited and (nx, ny) not in obstacles):
                     visited.add((nx, ny))
                     queue.append((nx, ny, dist + 1))
-
         return 9999
-
+    
 
     def _render_frame(self):
         if self.render_mode != "human":
             return
-
         if self.window is None:
             pygame.init()
             self.window = pygame.display.set_mode((GRID_WIDTH * GRID_SPACING, GRID_HEIGHT * GRID_SPACING))
             self.clock = pygame.time.Clock()
 
-        for event in pygame.event.get  ():
+        for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.close()
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -257,6 +302,7 @@ class WarehouseEnv(gym.Env):
                     shelf.has_box = True
                     shelf.image = shelf.loaded_image
                     self.target_queue.append((gx, gy))
+                    self._try_assign_tasks()  # Let a free robot claim it immediately
 
         canvas = pygame.Surface((GRID_WIDTH * GRID_SPACING, GRID_HEIGHT * GRID_SPACING))
         canvas.fill("#5FCB9B")
@@ -267,8 +313,9 @@ class WarehouseEnv(gym.Env):
         for obj in self.shelves:
             canvas.blit(obj.shadow_image, (obj.x - 3, obj.y + 12))
 
-        r_rect = self.robot.get_pixel_rect()
-        canvas.blit(self.robot.image, (r_rect.x, r_rect.y))
+        for robot in self.robots:
+            r_rect = robot.get_pixel_rect()
+            canvas.blit(robot.image, (r_rect.x, r_rect.y))
 
         for obj in self.shelves:
             canvas.blit(obj.image, obj)
