@@ -24,6 +24,7 @@ class DualQAgent:
         return (rx, ry, loaded, robot_direction, bx, by)
 
 
+
     def select_action(self, obs):
         state = self._get_state(obs)
         if random.random() < self.epsilon:
@@ -31,6 +32,8 @@ class DualQAgent:
         if state not in self.q_table:
             self.q_table[state] = np.zeros(self.action_dim)
         return int(np.argmax(self.q_table[state]))
+    
+
 
     def update(self, obs, action, reward, next_obs, done=False):
         state = self._get_state(obs)

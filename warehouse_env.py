@@ -14,7 +14,7 @@ class WarehouseEnv(gym.Env):
     def __init__(self, render_mode=None):
         super().__init__()
         self.render_mode = render_mode
-        self.action_space = spaces.Discrete(5)
+        self.action_space = spaces.Discrete(6)
         self.observation_space = spaces.Box(
             low=np.array([0, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32),
             high=np.array([
@@ -120,6 +120,8 @@ class WarehouseEnv(gym.Env):
             {'up': 0, 'down': 1, 'left': 2, 'right': 3}[self.robot.direction]
         ], dtype=np.float32)
 
+
+
     def step(self, action):
         self.reward = -0.3
         terminated = False
@@ -165,11 +167,17 @@ class WarehouseEnv(gym.Env):
                         target_shelf.has_box):
                         self.robot.loaded = True
                         target_shelf.has_box = False
+                        target_shelf.image = target_shelf.empty_image
                         self.reward += 50
                     else:
                         self.reward -= 50
                 else:
                     self.reward -= 50
+
+        elif action == 5:
+            moved = True 
+            if len(self.target_queue) > 0:
+                self.reward -= 5
 
         # Next target/distance
         if self.robot.loaded:
@@ -227,6 +235,7 @@ class WarehouseEnv(gym.Env):
 
         return 9999
 
+
     def _render_frame(self):
         if self.render_mode != "human":
             return
@@ -246,6 +255,7 @@ class WarehouseEnv(gym.Env):
                 shelf = self._get_shelf_at(gx, gy)
                 if shelf and not shelf.has_box:
                     shelf.has_box = True
+                    shelf.image = shelf.loaded_image
                     self.target_queue.append((gx, gy))
 
         canvas = pygame.Surface((GRID_WIDTH * GRID_SPACING, GRID_HEIGHT * GRID_SPACING))
