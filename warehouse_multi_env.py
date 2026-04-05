@@ -186,8 +186,8 @@ class WarehouseMultiEnv(ParallelEnv):
         spawned = set()
         for _ in range(NUM_AGENTS):
             while True:
-                rx = np.random.randint(0, GRID_WIDTH)
-                ry = np.random.randint(0, GRID_HEIGHT)
+                rx = int(np.random.randint(0, GRID_WIDTH))
+                ry = int(np.random.randint(0, GRID_HEIGHT))
                 if (rx, ry) not in blocked and (rx, ry) not in spawned:
                     break
             spawned.add((rx, ry))
@@ -329,8 +329,14 @@ class WarehouseMultiEnv(ParallelEnv):
         # ── Interact (4) and Wait (5) ──
         for i, robot in enumerate(self.robots):
             action = actions[f"robot_{i}"]
+            # if action == 4:
+            #     rewards[f"robot_{i}"] += self._handle_interact(i, robot, claimed)
             if action == 4:
-                rewards[f"robot_{i}"] += self._handle_interact(i, robot, claimed)
+                reward_bonus, pickup, dropoff = self._handle_interact(i, robot, claimed)
+                rewards[f"robot_{i}"] += reward_bonus
+                # return pickup/dropoff in infos so trainer can read it
+                infos[f"robot_{i}"]["pickup"] = pickup
+                infos[f"robot_{i}"]["dropoff"] = dropoff
             elif action == 5:
                 # Penalise waiting when there is still work to do
                 if self.assignments[i] is not None or self.target_queue:
@@ -395,15 +401,11 @@ class WarehouseMultiEnv(ParallelEnv):
     # ── interact helper ───────────────────────────────────────────────────────
 
     def _handle_interact(self, robot_id, robot, claimed):
-        """
-        Grid-based pickup and drop — no pixel/direction checks.
-        Pickup: robot must be adjacent (Manhattan == 1) to assigned shelf.
-        Drop:   robot must be adjacent to any dropoff platform.
-        """
         bonus = 0
+        pickup = 0
+        dropoff = 0
 
         if robot.loaded:
-            # Try to drop at any adjacent dropoff platform
             for plat in self.dropoff_platforms:
                 pgx, pgy = self._obj_grid(plat)
                 if abs(robot.grid_x - pgx) + abs(robot.grid_y - pgy) <= 1:
@@ -419,12 +421,12 @@ class WarehouseMultiEnv(ParallelEnv):
                     self.assignments[robot_id] = None
                     self._assign_packages()
                     bonus += 150
-                    return bonus
+                    dropoff = 1  # ← flag
+                    return bonus, pickup, dropoff
 
-            bonus -= 20   # tried to drop at wrong location
+            bonus -= 20
 
         else:
-            # Try to pick up assigned package
             pkg = self.assignments[robot_id]
             if pkg is not None:
                 tx, ty = pkg
@@ -436,12 +438,13 @@ class WarehouseMultiEnv(ParallelEnv):
                     shelf.image = shelf.empty_image
                     robot.update_image()
                     bonus += 50
+                    pickup = 1  # ← flag
                 else:
-                    bonus -= 15   # not adjacent / shelf empty
+                    bonus -= 15
             else:
-                bonus -= 10       # no assignment
+                bonus -= 10
 
-        return bonus
+        return bonus, pickup, dropoff
 
     # ── deadlock helper ───────────────────────────────────────────────────────
 

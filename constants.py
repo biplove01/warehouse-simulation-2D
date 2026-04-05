@@ -16,7 +16,7 @@ CHARGE_STATION_HEIGHT = 58
 ROBOT_WIDTH = 40
 ROBOT_HEIGHT = 48
 
-NUMBER_OF_ROBOTS = 2
+NUMBER_OF_ROBOTS = 3
 
 # load images
 def load_img(image_name, scale=None):

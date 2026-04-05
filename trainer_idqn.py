@@ -133,7 +133,7 @@ class IDQNTrainer:
         target_sync_freq: int   = 400,
         epsilon_start:    float = 1.0,
         epsilon_end:      float = 0.05,
-        epsilon_decay:    float = 0.9997,
+        epsilon_decay:    float = 0.999,
         grad_updates_per_step: int = 4,    # multiple gradient steps per env step
     ):
         self.env        = env
@@ -240,10 +240,10 @@ class IDQNTrainer:
             self,
             n_episodes: int = 5000,
             save_dir: str = "checkpoints",
-            save_every: int = 10,
+            save_every: int = 2,
             log_every: int = 2,
             agent_stagnation_limit: int = 600,
-            max_ep_steps: int = 3000,
+            max_ep_steps: int = 4000,
             heartbeat_every: int = 200,  # ← print a mid-episode pulse every N steps
     ):
         import time
@@ -262,7 +262,8 @@ class IDQNTrainer:
             max_current_stagnation = 0
             ep_start = time.time()
 
-            deliveries_per_agent = {a: 0 for a in self.agents}
+            pickups_per_agent = {a: 0 for a in self.agents}
+            dropoffs_per_agent = {a: 0 for a in self.agents}
             stagnant_steps_per_agent = {a: 0 for a in self.agents}
             active_agents = set(self.agents)
 
@@ -273,12 +274,15 @@ class IDQNTrainer:
                     elapsed = time.time() - ep_start
                     avg_loss = sum(loss_window) / len(loss_window) if loss_window else 0.0
                     buf_pct = min(100, 100 * len(self.buffer) / self.warmup)
+                    # deliv_summary = " | ".join([f"R{i}:{deliveries_per_agent[a]}" for i, a in enumerate(self.agents)])
                     print(
-                        f"  [Ep {ep} | step {ep_steps}/{max_ep_steps}] "
-                        f"active={len(active_agents)} "
-                        f"buf={len(self.buffer)}({buf_pct:.0f}%warm) "
-                        f"loss={avg_loss:.5f} eps={self.eps:.3f} "
+                        f"  ⏱  [Ep {ep} | step {ep_steps}/{max_ep_steps}] "
+                        f"active={len(active_agents)}/3 "
+                        f"buf={len(self.buffer)}({buf_pct:.0f}%) "
+                        f"loss={avg_loss:.5f} "
+                        f"eps={self.eps:.3f} "
                         f"stag={max_current_stagnation} "
+                        # f"deliveries=[{deliv_summary}] "
                         f"elapsed={elapsed:.1f}s"
                     )
 
@@ -287,7 +291,7 @@ class IDQNTrainer:
                 actions = self.select_actions(current_obs)
 
                 # ── Env step ──────────────────────────────────────────────────────
-                next_obs, rewards, terms, truncs, _ = self.env.step(actions)
+                next_obs, rewards, terms, truncs, infos = self.env.step(actions)
 
                 # ── Experience processing ─────────────────────────────────────────
                 for agent in list(active_agents):
@@ -297,8 +301,11 @@ class IDQNTrainer:
 
                     stagnant_steps_per_agent[agent] += 1
                     if rewards[agent] > 0.5:
-                        deliveries_per_agent[agent] += 1
                         stagnant_steps_per_agent[agent] = 0
+
+                    # Track pickups and dropoffs
+                    pickups_per_agent[agent] += infos[agent].get("pickup", 0)
+                    dropoffs_per_agent[agent] += infos[agent].get("dropoff", 0)
 
                     done_flag = float(terms[agent] or truncs[agent])
                     self.buffer.push(
@@ -321,7 +328,8 @@ class IDQNTrainer:
 
                 # ── Gradient updates (skip entirely during warmup) ────────────────
                 if len(self.buffer) >= self.warmup:
-                    for _ in range(self.grad_updates_per_step):
+                    grad_updates = 1 if self.eps > 0.5 else 2 if self.eps > 0.2 else 4
+                    for _ in range(grad_updates):
                         loss = self._train_step()
                         if loss is not None:
                             ep_losses.append(loss)
@@ -345,27 +353,38 @@ class IDQNTrainer:
 
             self.eps = max(self.eps_end, self.eps * self.eps_decay)
 
-            # ── Episode log ───────────────────────────────────────────────────────
-            if ep % log_every == 0:
-                avg_loss = sum(loss_window) / len(loss_window) if loss_window else 0.0
-                delivery_info = " | ".join(
-                    [f"R{i}:{deliveries_per_agent[a]}" for i, a in enumerate(self.agents)]
-                )
 
-                print(f"\n{'=' * 40}")
-                print(f"Episode {ep:>5}  ({ep_duration:.1f}s)")
-                print(f"  Score      : {final_score}/{self.env.goal_deliveries}  "
-                      f"(Avg100: {np.mean(score_window):.2f})")
-                print(f"  Loss       : {avg_loss:.5f}")
-                print(f"  Epsilon    : {self.eps:.4f}")
-                print(f"  Steps      : {ep_steps}  |  Grad steps: {self._grad_steps}")
-                print(f"  Stagnation : {max_current_stagnation}")
-                print(f"  Deliveries : {delivery_info}")
-                print(f"  Buffer     : {len(self.buffer)}/{self.buffer.buf.maxlen}")
-                print(f"  Outcomes   : ✓{total_success}  ✗stag:{total_fail}  ⌛{total_timeout}")
-                if DEVICE.type == "cuda":
-                    print(f"  VRAM       : {torch.cuda.memory_allocated() / 1e6:.0f} MB")
-                print(f"{'=' * 40}\n")
+            # ── Episode log ───────────────────────────────────────────────────────
+            # if ep % log_every == 0:
+            avg_loss = sum(loss_window) / len(loss_window) if loss_window else 0.0
+
+            print(f"\n{'=' * 52}")
+            print(f"  Episode {ep:>5}  |  Duration: {ep_duration:.1f}s  |  Steps: {ep_steps}")
+            print(f"{'=' * 52}")
+
+            print(
+                f"  Score      : {final_score}/{self.env.goal_deliveries}  (Avg100: {np.mean(score_window):.2f}  Best: {best_score})")
+            print(f"  Loss       : {avg_loss:.5f}  |  Grad Steps: {self._grad_steps}")
+            print(
+                f"  Epsilon    : {self.eps:.4f}  ({'🔴 exploring' if self.eps > 0.3 else '🟡 transitioning' if self.eps > 0.1 else '🟢 exploiting'})")
+            print(
+                f"  Buffer     : {len(self.buffer)}/{self.buffer.buf.maxlen}  ({'warming up' if len(self.buffer) < self.warmup else 'training'})")
+
+            # Per-robot pickup/dropoff table
+            print(f"  {'─' * 46}")
+            print(f"  {'Robot':<10} {'Pickups':<16} {'Dropoffs':<16} {'Stagnation'}")
+            print(f"  {'─' * 46}")
+            for i, a in enumerate(self.agents):
+                print(
+                    f"  Robot {i:<5} {pickups_per_agent[a]:<16} {dropoffs_per_agent[a]:<16} {stagnant_steps_per_agent[a]}")
+            print(f"  {'─' * 46}")
+
+            print(f"  Stagnation : {max_current_stagnation}/{agent_stagnation_limit}")
+            print(
+                f"  Outcomes   : ✅ Success: {total_success}  ❌ Stagnation: {total_fail}  ⌛ Timeout: {total_timeout}")
+            print(f"{'=' * 52}\n")
+
+
 
             # ── Checkpointing ─────────────────────────────────────────────────────
             print(f"  ★ Final score: {final_score}.")
@@ -388,7 +407,7 @@ class IDQNTrainer:
                     "episode": ep
                 }, ckpt_path)  # ← ckpt_path, not best_policy.pt
                 self.save_buffer(ckpt_path.replace(".pt", "_buffer.pkl"))
-                
+
         return self.policy
 
     # ── load ──────────────────────────────────────────────────────────────────
