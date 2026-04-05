@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 from collections import deque
 
-from env_multi import WarehouseMultiEnv, NUM_AGENTS, OBS_SIZE, N_ACTIONS
+from warehouse_multi_env import WarehouseMultiEnv, NUM_AGENTS, OBS_SIZE, N_ACTIONS
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {DEVICE}")
@@ -317,7 +317,7 @@ def run_curriculum(save_dir: str = "checkpoints"):
       Phase 2 — 5000 episodes, 5 robots, 10 packages → full task
     Transfer: policy weights from phase 1 initialise phase 2.
     """
-    import env_multi as em
+    import warehouse_multi_env as em
 
     # ── Phase 1 ──
     print("=" * 60)

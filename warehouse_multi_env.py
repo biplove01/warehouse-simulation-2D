@@ -201,6 +201,8 @@ class WarehouseMultiEnv(ParallelEnv):
 
         self._assign_packages()
 
+        self._step_occ = self._build_occupancy()  # ← add this line
+
         observations = {f"robot_{i}": self._get_obs(i) for i in range(NUM_AGENTS)}
         infos        = {f"robot_{i}": {} for i in range(NUM_AGENTS)}
 
