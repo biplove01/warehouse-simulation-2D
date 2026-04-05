@@ -372,21 +372,23 @@ class IDQNTrainer:
 
             if final_score > best_score:
                 best_score = final_score
-                torch.save(self.policy.state_dict(), os.path.join(save_dir, "best_policy.pt"))
-                print(f"  ★ New best score: {best_score} — checkpoint saved")
-                self.save_buffer(os.path.join(save_dir, "best_policy_buffer.pkl"))  # ← add this
-
-            if ep % save_every == 0 and ep > 0:
-                ckpt_path = os.path.join(save_dir, f"ckpt_ep{ep:05d}.pt")
-                # torch.save({"policy": self.policy.state_dict(),
-                #             "epsilon": self.eps, "episode": ep}, ckpt_path)
                 torch.save({
                     "policy": self.policy.state_dict(),
                     "epsilon": self.eps,
                     "episode": ep
-                }, ckpt_path)
-                self.save_buffer(ckpt_path.replace(".pt", "_buffer.pkl"))
+                }, os.path.join(save_dir, "best_policy.pt"))
+                self.save_buffer(os.path.join(save_dir, "best_policy_buffer.pkl"))
+                print(f"  ★ New best score: {best_score} — checkpoint saved")
 
+            if ep % save_every == 0 and ep > 0:
+                ckpt_path = os.path.join(save_dir, f"ckpt_ep{ep:05d}.pt")
+                torch.save({
+                    "policy": self.policy.state_dict(),
+                    "epsilon": self.eps,
+                    "episode": ep
+                }, ckpt_path)  # ← ckpt_path, not best_policy.pt
+                self.save_buffer(ckpt_path.replace(".pt", "_buffer.pkl"))
+                
         return self.policy
 
     # ── load ──────────────────────────────────────────────────────────────────
