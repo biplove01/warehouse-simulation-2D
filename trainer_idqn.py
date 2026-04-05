@@ -192,8 +192,8 @@ class IDQNTrainer:
         self,
         n_episodes: int  = 5000,
         save_dir:   str  = "checkpoints",
-        save_every: int  = 500,
-        log_every:  int  = 50,
+        save_every: int  = 50,
+        log_every:  int  = 2,
     ):
         os.makedirs(save_dir, exist_ok=True)
         best_score   = -1
