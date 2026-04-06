@@ -125,15 +125,15 @@ class IDQNTrainer:
     def __init__(
         self,
         env: WarehouseMultiEnv,
-        lr:               float = 3e-4,
+        lr: float = 1e-4,  # was 3e-4
+        target_sync_freq: int = 200,  # was 400
+        epsilon_decay: float = 0.998,  # keep your current value
         gamma:            float = 0.99,
         batch_size:       int   = 1024,    # ↑ from 256 — keeps GPU fed
         buffer_capacity:  int   = 150_000,
         warmup_steps:     int   = 2_000,
-        target_sync_freq: int   = 400,
         epsilon_start:    float = 1.0,
         epsilon_end:      float = 0.05,
-        epsilon_decay:    float = 0.999,
         grad_updates_per_step: int = 4,    # multiple gradient steps per env step
     ):
         self.env        = env
@@ -223,7 +223,7 @@ class IDQNTrainer:
 
         self.opt.zero_grad(set_to_none=True)   # faster than zero_grad()
         loss.backward()
-        nn.utils.clip_grad_norm_(self.policy.parameters(), 10.0)
+        nn.utils.clip_grad_norm_(self.policy.parameters(), 5.0) #down from 10
         self.opt.step()
 
         self._grad_steps += 1
@@ -240,11 +240,11 @@ class IDQNTrainer:
             self,
             n_episodes: int = 5000,
             save_dir: str = "checkpoints",
-            save_every: int = 2,
-            log_every: int = 2,
+            save_every: int = 100,
+            log_every: int = 10,
             agent_stagnation_limit: int = 600,
             max_ep_steps: int = 4000,
-            heartbeat_every: int = 200,  # ← print a mid-episode pulse every N steps
+            heartbeat_every: int = 100,  # ← print a mid-episode pulse every N steps
     ):
         import time
         os.makedirs(save_dir, exist_ok=True)
@@ -300,8 +300,10 @@ class IDQNTrainer:
                         continue
 
                     stagnant_steps_per_agent[agent] += 1
-                    if rewards[agent] > 0.5:
+                    if rewards[agent] > 0.1:
                         stagnant_steps_per_agent[agent] = 0
+                    elif rewards[agent] < -12:
+                        stagnant_steps_per_agent[agent] += 2
 
                     # Track pickups and dropoffs
                     pickups_per_agent[agent] += infos[agent].get("pickup", 0)
@@ -353,37 +355,24 @@ class IDQNTrainer:
 
             self.eps = max(self.eps_end, self.eps * self.eps_decay)
 
-
-            # ── Episode log ───────────────────────────────────────────────────────
-            # if ep % log_every == 0:
+            # ── Episode log — compact table format ───────────────────────────────────────
             avg_loss = sum(loss_window) / len(loss_window) if loss_window else 0.0
-
-            print(f"\n{'=' * 52}")
-            print(f"  Episode {ep:>5}  |  Duration: {ep_duration:.1f}s  |  Steps: {ep_steps}")
-            print(f"{'=' * 52}")
+            eps_icon = '🔴' if self.eps > 0.3 else '🟡' if self.eps > 0.1 else '🟢'
+            buf_pct = int(100 * len(self.buffer) / self.buffer.buf.maxlen)
 
             print(
-                f"  Score      : {final_score}/{self.env.goal_deliveries}  (Avg100: {np.mean(score_window):.2f}  Best: {best_score})")
-            print(f"  Loss       : {avg_loss:.5f}  |  Grad Steps: {self._grad_steps}")
-            print(
-                f"  Epsilon    : {self.eps:.4f}  ({'🔴 exploring' if self.eps > 0.3 else '🟡 transitioning' if self.eps > 0.1 else '🟢 exploiting'})")
-            print(
-                f"  Buffer     : {len(self.buffer)}/{self.buffer.buf.maxlen}  ({'warming up' if len(self.buffer) < self.warmup else 'training'})")
-
-            # Per-robot pickup/dropoff table
-            print(f"  {'─' * 46}")
-            print(f"  {'Robot':<10} {'Pickups':<16} {'Dropoffs':<16} {'Stagnation'}")
-            print(f"  {'─' * 46}")
+                f"[{ep:>5}] score:{final_score}/{self.env.goal_deliveries}  "
+                f"avg:{np.mean(score_window):.2f}  best:{best_score}  "
+                f"loss:{avg_loss:.4f}  {eps_icon}eps:{self.eps:.3f}  "
+                f"steps:{ep_steps}  buf:{buf_pct}%  "
+                f"✅{total_success} ❌{total_fail} ⌛{total_timeout}"
+            )
             for i, a in enumerate(self.agents):
-                print(
-                    f"  Robot {i:<5} {pickups_per_agent[a]:<16} {dropoffs_per_agent[a]:<16} {stagnant_steps_per_agent[a]}")
-            print(f"  {'─' * 46}")
-
-            print(f"  Stagnation : {max_current_stagnation}/{agent_stagnation_limit}")
-            print(
-                f"  Outcomes   : ✅ Success: {total_success}  ❌ Stagnation: {total_fail}  ⌛ Timeout: {total_timeout}")
-            print(f"{'=' * 52}\n")
-
+                p = pickups_per_agent[a]
+                d = dropoffs_per_agent[a]
+                stag = stagnant_steps_per_agent[a]
+                print(f"         Robot {i} — pickups:{p}  dropoffs:{d}  stagnation:{stag}")
+            print()
 
 
             # ── Checkpointing ─────────────────────────────────────────────────────
@@ -393,7 +382,7 @@ class IDQNTrainer:
                 best_score = final_score
                 torch.save({
                     "policy": self.policy.state_dict(),
-                    "epsilon": self.eps,
+                    # "epsilon": self.eps,
                     "episode": ep
                 }, os.path.join(save_dir, "best_policy.pt"))
                 self.save_buffer(os.path.join(save_dir, "best_policy_buffer.pkl"))
@@ -403,7 +392,7 @@ class IDQNTrainer:
                 ckpt_path = os.path.join(save_dir, f"ckpt_ep{ep:05d}.pt")
                 torch.save({
                     "policy": self.policy.state_dict(),
-                    "epsilon": self.eps,
+                    # "epsilon": self.eps,
                     "episode": ep
                 }, ckpt_path)  # ← ckpt_path, not best_policy.pt
                 self.save_buffer(ckpt_path.replace(".pt", "_buffer.pkl"))
@@ -417,8 +406,8 @@ class IDQNTrainer:
         state = ckpt.get("policy", ckpt)
         self.policy.load_state_dict(state)
         self.target.load_state_dict(state)
-        if "epsilon" in ckpt:
-            self.eps = ckpt["epsilon"]
+        # if "epsilon" in ckpt:
+        #     self.eps = ckpt["epsilon"]
         self.load_buffer(path.replace(".pt", "_buffer.pkl"))
         print(f"Loaded policy from {path}  (ε={self.eps:.3f})")
 

@@ -195,7 +195,7 @@ class WarehouseMultiEnv(ParallelEnv):
 
         # Per-robot bookkeeping
         self.assignments     = {i: None for i in range(NUM_AGENTS)}
-        self.state_histories = [deque(maxlen=12) for _ in range(NUM_AGENTS)]
+        self.state_histories = [deque(maxlen=20) for _ in range(NUM_AGENTS)]
         self.stuck_counters  = [0] * NUM_AGENTS
         self._last_positions = [(r.grid_x, r.grid_y) for r in self.robots]
 
@@ -273,7 +273,7 @@ class WarehouseMultiEnv(ParallelEnv):
         # Rebuild occupancy once — shared by _get_obs calls this step
         self._step_occ = self._build_occupancy()
 
-        rewards      = {f"robot_{i}": -0.3  for i in range(NUM_AGENTS)}
+        rewards      = {f"robot_{i}": -0.01  for i in range(NUM_AGENTS)}
         terminations = {a: False for a in self.agents}
         truncations  = {a: False for a in self.agents}
         infos        = {a: {}    for a in self.agents}
@@ -313,7 +313,7 @@ class WarehouseMultiEnv(ParallelEnv):
                 else:
                     intended[i]                       = (robot.grid_x, robot.grid_y)
                     claimed[(robot.grid_x, robot.grid_y)] = i
-                    rewards[f"robot_{i}"]            -= 1.5   # bumped into obstacle/robot
+                    rewards[f"robot_{i}"] -= 1.5  # was 0.5   # bumped into obstacle/robot
             else:
                 intended[i] = (robot.grid_x, robot.grid_y)
                 claimed.setdefault((robot.grid_x, robot.grid_y), i)
@@ -329,8 +329,6 @@ class WarehouseMultiEnv(ParallelEnv):
         # ── Interact (4) and Wait (5) ──
         for i, robot in enumerate(self.robots):
             action = actions[f"robot_{i}"]
-            # if action == 4:
-            #     rewards[f"robot_{i}"] += self._handle_interact(i, robot, claimed)
             if action == 4:
                 reward_bonus, pickup, dropoff = self._handle_interact(i, robot, claimed)
                 rewards[f"robot_{i}"] += reward_bonus
@@ -340,7 +338,7 @@ class WarehouseMultiEnv(ParallelEnv):
             elif action == 5:
                 # Penalise waiting when there is still work to do
                 if self.assignments[i] is not None or self.target_queue:
-                    rewards[f"robot_{i}"] -= 3.0
+                    rewards[f"robot_{i}"] -= 1.0
 
         # ── Post-step reward shaping (progress toward target) ──
         for i, robot in enumerate(self.robots):
@@ -351,14 +349,29 @@ class WarehouseMultiEnv(ParallelEnv):
             else:
                 dm = {}
             post_dist = self._get_dist(dm, robot.grid_x, robot.grid_y)
-            rewards[f"robot_{i}"] += 0.9 * (pre_dists[i] - post_dist)
+            rewards[f"robot_{i}"] += 0.6 * (pre_dists[i] - post_dist)
+
+        # ── Adjacency bonus — nudge robot to execute interact ──
+        for i, robot in enumerate(self.robots):
+            pkg = self.assignments[i]
+            if pkg is not None and not robot.loaded:
+                tx, ty = int(pkg[0]), int(pkg[1])
+                dist_to_pkg = abs(robot.grid_x - tx) + abs(robot.grid_y - ty)
+                if dist_to_pkg == 1:
+                    rewards[f"robot_{i}"] += 2.0  # strongly reward being adjacent to package
+            elif robot.loaded:
+                if abs(robot.grid_x - self.dropoff_gx) + abs(robot.grid_y - self.dropoff_gy) <= 1:
+                    rewards[f"robot_{i}"] += 0.5  # adjacent to dropoff
+
 
         # ── Deadlock / loop detection ──
         for i, robot in enumerate(self.robots):
             key = (robot.grid_x, robot.grid_y, int(robot.loaded), self.assignments[i])
             self.state_histories[i].append(key)
-            if self.state_histories[i].count(key) >= 4:
-                rewards[f"robot_{i}"] -= 40   # hard loop penalty
+            visit_count = self.state_histories[i].count(key)
+            if visit_count >= 3:
+                # Escalating penalty — the more times you revisit, the worse it gets
+                rewards[f"robot_{i}"] -= 1 * (visit_count - 2)
 
             # Stuck counter → forced random nudge
             if (robot.grid_x, robot.grid_y) == self._last_positions[i]:
@@ -369,6 +382,17 @@ class WarehouseMultiEnv(ParallelEnv):
             if self.stuck_counters[i] > 12:
                 self._force_random_move(i, robot, claimed)
                 self.stuck_counters[i] = 0
+
+        # ── Oscillation detection (position only, ignores state) ──
+        for i, robot in enumerate(self.robots):
+            recent_positions = [
+                (s[0], s[1]) for s in self.state_histories[i]
+            ]
+            if len(recent_positions) >= 6:
+                # Check if robot is alternating between just 2 positions
+                unique_recent = set(recent_positions[-6:])
+                if len(unique_recent) <= 2:
+                    rewards[f"robot_{i}"] -= 3  #  oscillation penalty
 
         self._last_positions = [(r.grid_x, r.grid_y) for r in self.robots]
 
@@ -384,7 +408,7 @@ class WarehouseMultiEnv(ParallelEnv):
             for a in self.agents:
                 truncations[a] = True
             for i in range(NUM_AGENTS):
-                rewards[f"robot_{i}"] -= 100
+                rewards[f"robot_{i}"] -= 20
 
         # Build final observations
         observations = {f"robot_{i}": self._get_obs(i) for i in range(NUM_AGENTS)}
@@ -406,6 +430,7 @@ class WarehouseMultiEnv(ParallelEnv):
         dropoff = 0
 
         if robot.loaded:
+            # Robot is carrying a box — try to drop it off
             for plat in self.dropoff_platforms:
                 pgx, pgy = self._obj_grid(plat)
                 if abs(robot.grid_x - pgx) + abs(robot.grid_y - pgy) <= 1:
@@ -420,13 +445,19 @@ class WarehouseMultiEnv(ParallelEnv):
                             del self._pkg_dist_maps[pkg]
                     self.assignments[robot_id] = None
                     self._assign_packages()
-                    bonus += 150
+
+                    # ✅ Full delivery completed — robot picked up AND delivered a box
+                    # This is the ultimate goal, highest reward in the system
+                    bonus += 30
                     dropoff = 1  # ← flag
                     return bonus, pickup, dropoff
 
-            bonus -= 20
+            # ❌ Robot tried to drop but wasn't adjacent to any platform
+            # Penalize to discourage randomly spamming interact while loaded
+            bonus -= 5
 
         else:
+            # Robot is unloaded — try to pick up assigned package
             pkg = self.assignments[robot_id]
             if pkg is not None:
                 tx, ty = pkg
@@ -437,12 +468,21 @@ class WarehouseMultiEnv(ParallelEnv):
                     shelf.has_box = False
                     shelf.image = shelf.empty_image
                     robot.update_image()
-                    bonus += 50
-                    pickup = 1  # ← flag
+
+                    # ✅ Successful pickup — robot reached its assigned shelf and correctly executed interact while adjacent
+                    bonus += 20
+                    pickup = 1
                 else:
-                    bonus -= 15
+                    # ❌ Robot tried to interact but either:
+                    #    - is not adjacent to shelf (dist > 1)
+                    #    - shelf has no box (already picked up by someone else)
+                    bonus -= 5
             else:
-                bonus -= 10
+                # ❌ Robot has no assignment at all — tried to pick up
+                # but there's nothing assigned to it yet
+                # Small penalty — not the robot's fault, just discourage
+                # wasting interact actions when unassigned
+                bonus -= 2
 
         return bonus, pickup, dropoff
 
