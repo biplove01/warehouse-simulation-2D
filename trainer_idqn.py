@@ -132,7 +132,7 @@ class IDQNTrainer:
         batch_size:       int   = 1024,    # ↑ from 256 — keeps GPU fed
         buffer_capacity:  int   = 150_000,
         warmup_steps:     int   = 2_000,
-        epsilon_start:    float = 1.0,
+        epsilon_start:    float = 0.64,
         epsilon_end:      float = 0.05,
         grad_updates_per_step: int = 4,    # multiple gradient steps per env step
     ):
@@ -171,11 +171,14 @@ class IDQNTrainer:
         if not os.path.exists(path):
             print("No buffer file found, starting fresh.")
             return
-        with open(path, "rb") as f:
-            transitions = pickle.load(f)
-        for t in transitions:
-            self.buffer.buf.append(t)
-        print(f"Buffer loaded ({len(self.buffer)} transitions)")
+        try:
+            with open(path, "rb") as f:
+                transitions = pickle.load(f)
+            for t in transitions:
+                self.buffer.buf.append(t)
+            print(f"Buffer loaded ({len(self.buffer)} transitions)")
+        except (EOFError, pickle.UnpicklingError) as e:
+            print(f"Buffer file corrupted ({e}) — starting with empty buffer.")
 
     def select_actions(self, obs_dict: dict) -> dict:
         """
@@ -244,7 +247,7 @@ class IDQNTrainer:
             log_every: int = 10,
             agent_stagnation_limit: int = 600,
             max_ep_steps: int = 4000,
-            heartbeat_every: int = 100,  # ← print a mid-episode pulse every N steps
+            heartbeat_every: int = 200,  # ← print a mid-episode pulse every N steps
     ):
         import time
         os.makedirs(save_dir, exist_ok=True)
