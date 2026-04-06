@@ -305,13 +305,14 @@ class WarehouseMultiEnv(ParallelEnv):
                 in_bounds    = (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT)
                 free_obstacle = (nx, ny) not in self._obstacle_set
                 free_claimed  = (nx, ny) not in claimed
+                rewards[f"robot_{i}"] -= 0.05 # Small "energy cost" for any move
 
                 if in_bounds and free_obstacle and free_claimed:
                     intended[i]      = (nx, ny)
                     claimed[(nx, ny)] = i
                     robot.direction   = ["up","down","left","right"][action]
                 else:
-                    intended[i]                       = (robot.grid_x, robot.grid_y)
+                    intended[i] = (robot.grid_x, robot.grid_y)
                     claimed[(robot.grid_x, robot.grid_y)] = i
                     rewards[f"robot_{i}"] -= 1.5  # was 0.5   # bumped into obstacle/robot
             else:
@@ -329,16 +330,23 @@ class WarehouseMultiEnv(ParallelEnv):
         # ── Interact (4) and Wait (5) ──
         for i, robot in enumerate(self.robots):
             action = actions[f"robot_{i}"]
+            # Interact
             if action == 4:
                 reward_bonus, pickup, dropoff = self._handle_interact(i, robot, claimed)
                 rewards[f"robot_{i}"] += reward_bonus
                 # return pickup/dropoff in infos so trainer can read it
                 infos[f"robot_{i}"]["pickup"] = pickup
                 infos[f"robot_{i}"]["dropoff"] = dropoff
-            elif action == 5:
-                # Penalise waiting when there is still work to do
-                if self.assignments[i] is not None or self.target_queue:
+            
+            #  Wait
+            elif action == 5: 
+                # Only penalize waiting if THIS robot actually has a job to do
+                if self.assignments[i] is not None:
                     rewards[f"robot_{i}"] -= 1.0
+                else:
+                    # Small bonus for staying still when unassigned to prevent jitter
+                    rewards[f"robot_{i}"] += 0.25
+
 
         # ── Post-step reward shaping (progress toward target) ──
         for i, robot in enumerate(self.robots):
@@ -349,19 +357,30 @@ class WarehouseMultiEnv(ParallelEnv):
             else:
                 dm = {}
             post_dist = self._get_dist(dm, robot.grid_x, robot.grid_y)
-            rewards[f"robot_{i}"] += 0.6 * (pre_dists[i] - post_dist)
 
-        # ── Adjacency bonus — nudge robot to execute interact ──
+            # Reward for moving Closer (3x stronger signal):
+            dist_diff = pre_dists[i] - post_dist
+            rewards[f"robot_{i}"] += 2.0 * dist_diff
+
+
+        # ── Arrival Bonus: Reward reaching the destination doorstep ──
         for i, robot in enumerate(self.robots):
-            pkg = self.assignments[i]
-            if pkg is not None and not robot.loaded:
-                tx, ty = int(pkg[0]), int(pkg[1])
-                dist_to_pkg = abs(robot.grid_x - tx) + abs(robot.grid_y - ty)
-                if dist_to_pkg == 1:
-                    rewards[f"robot_{i}"] += 2.0  # strongly reward being adjacent to package
-            elif robot.loaded:
-                if abs(robot.grid_x - self.dropoff_gx) + abs(robot.grid_y - self.dropoff_gy) <= 1:
-                    rewards[f"robot_{i}"] += 0.5  # adjacent to dropoff
+            if robot.loaded:
+                dm = self._dropoff_dist_map
+            elif self.assignments[i] is not None:
+                dm = self._pkg_dist_maps.get(self.assignments[i], {})
+            else:
+                continue
+
+            post_dist = self._get_dist(dm, robot.grid_x, robot.grid_y)
+            
+            # Check if this move brought us to the doorstep (dist 1) from further away
+            if post_dist == 1 and pre_dists[i] > 1:
+                rewards[f"robot_{i}"] += 5.0  # Arrival bonus
+            
+            # Keep a small "being adjacent" nudge if they haven't interacted yet
+            elif post_dist == 1:
+                rewards[f"robot_{i}"] += 0.1
 
 
         # ── Deadlock / loop detection ──

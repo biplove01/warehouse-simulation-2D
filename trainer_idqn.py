@@ -95,11 +95,19 @@ class ReplayBuffer:
         obs, act, rew, nobs, done = zip(*batch)
 
         # pin_memory() + non_blocking=True → async CPU→GPU transfer
-        obs_t  = torch.from_numpy(np.stack(obs)).pin_memory().to(DEVICE, non_blocking=True)
-        act_t  = torch.tensor(act,  dtype=torch.long).unsqueeze(1).pin_memory().to(DEVICE, non_blocking=True)
-        rew_t  = torch.tensor(rew,  dtype=torch.float32).unsqueeze(1).pin_memory().to(DEVICE, non_blocking=True)
-        nobs_t = torch.from_numpy(np.stack(nobs)).pin_memory().to(DEVICE, non_blocking=True)
-        done_t = torch.tensor(done, dtype=torch.float32).unsqueeze(1).pin_memory().to(DEVICE, non_blocking=True)
+        # For GPU training
+        # obs_t  = torch.from_numpy(np.stack(obs)).pin_memory().to(DEVICE, non_blocking=True)
+        # act_t  = torch.tensor(act,  dtype=torch.long).unsqueeze(1).pin_memory().to(DEVICE, non_blocking=True)
+        # rew_t  = torch.tensor(rew,  dtype=torch.float32).unsqueeze(1).pin_memory().to(DEVICE, non_blocking=True)
+        # nobs_t = torch.from_numpy(np.stack(nobs)).pin_memory().to(DEVICE, non_blocking=True)
+        # done_t = torch.tensor(done, dtype=torch.float32).unsqueeze(1).pin_memory().to(DEVICE, non_blocking=True)
+
+        # For CPU training 
+        obs_t  = torch.from_numpy(np.stack(obs)).to(DEVICE)
+        act_t  = torch.tensor(act,  dtype=torch.long).unsqueeze(1).to(DEVICE)
+        rew_t  = torch.tensor(rew,  dtype=torch.float32).unsqueeze(1).to(DEVICE)
+        nobs_t = torch.from_numpy(np.stack(nobs)).to(DEVICE)
+        done_t = torch.tensor(done, dtype=torch.float32).unsqueeze(1).to(DEVICE)
 
         return obs_t, act_t, rew_t, nobs_t, done_t
 
@@ -128,13 +136,17 @@ class IDQNTrainer:
         lr: float = 1e-4,  # was 3e-4
         target_sync_freq: int = 200,  # was 400
         epsilon_decay: float = 0.998,  # keep your current value
-        gamma:            float = 0.99,
-        batch_size:       int   = 1024,    # ↑ from 256 — keeps GPU fed
+        gamma:            float = 0.97,   # was 0.99 — lower gamma can help with faster reward propagation in this task
+        # batch_size:       int   = 1024,    # ↑ from 256 — keeps GPU fed
+        batch_size:       int   = 256,    # ↑ from 256 — keeps GPU fed
+
         buffer_capacity:  int   = 150_000,
         warmup_steps:     int   = 2_000,
         epsilon_start:    float = 0.64,
         epsilon_end:      float = 0.05,
-        grad_updates_per_step: int = 4,    # multiple gradient steps per env step
+        # grad_updates_per_step: int = 4,    # multiple gradient steps per env step
+        grad_updates_per_step: int = 1,    # multiple gradient steps per env step
+
     ):
         self.env        = env
         self.gamma      = gamma
@@ -333,7 +345,11 @@ class IDQNTrainer:
 
                 # ── Gradient updates (skip entirely during warmup) ────────────────
                 if len(self.buffer) >= self.warmup:
-                    grad_updates = 1 if self.eps > 0.5 else 2 if self.eps > 0.2 else 4
+                    if DEVICE.type == "cpu":
+                        grad_updates = 1   # always 1 on CPU — GPU does multiple
+                    else:
+                        grad_updates = 1 if self.eps > 0.5 else 2 if self.eps > 0.2 else 4
+
                     for _ in range(grad_updates):
                         loss = self._train_step()
                         if loss is not None:
@@ -516,12 +532,32 @@ if __name__ == "__main__":
         else:
             print("No checkpoint found — starting fresh")
 
+    # CPU-specific overrides
+        if DEVICE.type == "cpu":
+            print("CPU detected — applying lightweight settings")
+            trainer.batch_size = 256       # was 1024
+            max_ep_steps       = 1000      # was 4000
+            heartbeat_every    = 950       # less frequent
+            grad_updates       = 1         # always 1 on CPU
+        else:
+            max_ep_steps       = 4000
+            heartbeat_every    = 200
+            grad_updates       = None      # use dynamic scaling
+
         trainer.run(
-            n_episodes=args.episodes,
-            save_dir=args.save_dir,
-            log_every=args.log_every,
-            save_every=args.save_every,
+            n_episodes    = args.episodes,
+            save_dir      = args.save_dir,
+            log_every     = args.log_every,
+            save_every    = args.save_every,
+            max_ep_steps  = max_ep_steps,
+            heartbeat_every = heartbeat_every,
         )
+        # trainer.run(
+        #     n_episodes=args.episodes,
+        #     save_dir=args.save_dir,
+        #     log_every=args.log_every,
+        #     save_every=args.save_every,
+        # )
 
     elif args.mode == "human":
         run_human(model_path=args.model)

@@ -64,6 +64,20 @@ class AgentEvaluator:
         # Environment
         self.env = WarehouseMultiEnv(render_mode="human" if render else None)
 
+    # def _load_model(self, path: str):
+    #     if not os.path.exists(path):
+    #         raise FileNotFoundError(f"Model not found: {path}")
+    #     ckpt  = torch.load(path, map_location=DEVICE)
+    #     state = ckpt.get("policy", ckpt)
+    #     self.policy.load_state_dict(state)
+
+    #     # Print checkpoint metadata if available
+    #     if isinstance(ckpt, dict) and "episode" in ckpt:
+    #         print(f"  Checkpoint from episode : {ckpt['episode']}")
+    #         print(f"  Best score during train : {ckpt.get('best_score', 'N/A')}")
+    #         print(f"  Epsilon at save         : {ckpt.get('epsilon', 'N/A'):.4f}")
+    #     print(f"  Model loaded from       : {path}\n")
+
     def _load_model(self, path: str):
         if not os.path.exists(path):
             raise FileNotFoundError(f"Model not found: {path}")
@@ -71,12 +85,15 @@ class AgentEvaluator:
         state = ckpt.get("policy", ckpt)
         self.policy.load_state_dict(state)
 
-        # Print checkpoint metadata if available
         if isinstance(ckpt, dict) and "episode" in ckpt:
-            print(f"  Checkpoint from episode : {ckpt['episode']}")
-            print(f"  Best score during train : {ckpt.get('best_score', 'N/A')}")
-            print(f"  Epsilon at save         : {ckpt.get('epsilon', 'N/A'):.4f}")
-        print(f"  Model loaded from       : {path}\n")
+            print(f"   Checkpoint from episode : {ckpt['episode']}")
+            print(f"   Best score during train : {ckpt.get('best_score', 'N/A')}")
+            
+            eps = ckpt.get('epsilon')
+            eps_str = f"{eps:.4f}" if isinstance(eps, (int, float)) else "N/A"
+            print(f"   Epsilon at save         : {eps_str}")
+            
+        print(f"   Model loaded from       : {path}\n")
 
     def _select_actions(self, obs_dict: dict) -> dict:
         """Pure greedy — no random actions during evaluation."""
@@ -117,6 +134,8 @@ class AgentEvaluator:
             t_start    = time.time()
 
             while self.env.agents:
+                if self.render:
+                    time.sleep(0.1)  # 0.1 seconds = 10 FPS. Adjust as needed.
                 actions  = self._select_actions(obs)
 
                 # Track action distribution
