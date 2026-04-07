@@ -160,7 +160,6 @@ class IDQNTrainer:
         self.agents     = [f"robot_{i}" for i in range(NUM_AGENTS)]
 
         # ONE shared policy + target
-        # Note: torch.compile is disabled — Triton is not supported on Windows
         self.policy = DQN(OBS_SIZE, N_ACTIONS).to(DEVICE)
         self.target = DQN(OBS_SIZE, N_ACTIONS).to(DEVICE)
         self.target.load_state_dict(self.policy.state_dict())
@@ -172,8 +171,8 @@ class IDQNTrainer:
         self._grad_steps  = 0
         self._total_steps = 0
 
-    # ── action selection (batched — one GPU call for all agents) ─────────────
 
+    # ── action selection (batched — one GPU call for all agents) ─────────────
     def save_buffer(self, path: str):
         with open(path, "wb") as f:
             pickle.dump(list(self.buffer.buf), f)
@@ -220,7 +219,6 @@ class IDQNTrainer:
 
 
     # ── gradient step ─────────────────────────────────────────────────────────
-
     def _train_step(self) -> float | None:
         if len(self.buffer) < self.warmup:
             return None
