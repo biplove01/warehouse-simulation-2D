@@ -2,60 +2,84 @@ import torch
 import numpy as np
 import time
 from warehouse_env import WarehouseEnv
-from trainer import QNet  # Importing the architecture we defined
+from trainer import QNetwork
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+compute_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def test_policy(model_path="best_model.pt", num_episodes=5, render=True):
-    # 1. Setup Environment
-    # If you have a render_mode in your WarehouseEnv, "human" lets you watch it.
+
+def test_policy(model_path="checkpoints/model_ep_latest.pt", num_episodes=5, render=True):
+
+    # 1. Setup environment
     env = WarehouseEnv(render_mode="human" if render else None)
 
-    # 2. Load the Model
+    # 2. Load the trained model
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
-    model = QNet(state_dim, action_dim).to(DEVICE)
+    policy_network = QNetwork(state_dim, action_dim).to(compute_device)
+
     try:
-        # Load the weights
-        checkpoint = torch.load(model_path, map_location=DEVICE)
-        # Handle cases where you might have saved a dict with "policy" key or just the weights
-        state_dict = checkpoint.get("policy", checkpoint) if isinstance(checkpoint, dict) else checkpoint
-        model.load_state_dict(state_dict)
-        model.eval() # Set to evaluation mode
+        checkpoint = torch.load(model_path, map_location=compute_device)
+
+        # Handle both raw state dicts and checkpoint dicts saved with a "policy" key
+        if isinstance(checkpoint, dict):                            
+            model_weights = checkpoint.get("policy", checkpoint)    
+        else:
+            model_weights = checkpoint
+
+        policy_network.load_state_dict(model_weights)
+        policy_network.eval()
         print(f"Successfully loaded model from {model_path}")
+
     except FileNotFoundError:
         print(f"Error: {model_path} not found. Train the robot first!")
         return
 
-    # 3. Evaluation Loop
-    for ep in range(num_episodes):
-        state, _ = env.reset()
-        total_reward = 0
-        done = False
-        steps = 0
+    # 3. Evaluation loop
+    for episode in range(num_episodes):
+        current_state, _ = env.reset()
+        episode_total_reward = 0
+        is_done = False
+        step_count = 0
 
-        print(f"\n--- Episode {ep + 1} Starting ---")
+        print(f"\n--- Episode {episode + 1} Starting ---")
 
-        while not done:
-            # Always pick the BEST action (Greedy)
+        while not is_done:
+            # Always pick the best action greedily (no exploration)
             with torch.no_grad():
-                state_t = torch.as_tensor(state, dtype=torch.float32, device=DEVICE).unsqueeze(0)
-                action = model(state_t).argmax().item()
+                state_tensor = torch.as_tensor(
+                    current_state, dtype=torch.float32, device=compute_device
+                ).unsqueeze(0)
+                chosen_action = policy_network(state_tensor).argmax().item()
 
-            state, reward, term, trunc, _ = env.step(action)
-            done = term or trunc
-            total_reward += reward
-            steps += 1
+            current_state, reward, terminated, truncated, _ = env.step(chosen_action)
+            is_done = terminated or truncated
+            episode_total_reward += reward
+            step_count += 1
 
-            # Optional: Slow down the render so you can actually see the robot move
+             # Log what the robot just did
+            action_names = ["Up", "Down", "Left", "Right", "Interact", "Wait"]
+            print(
+                f"  Step {step_count:3d} | "
+                f"Action: {action_names[chosen_action]:8s} | "
+                f"Reward: {reward:6.2f} | "
+                f"Loaded: {env.robot.loaded} | "
+                f"Pos: ({env.robot.grid_x}, {env.robot.grid_y}) | "
+                f"Score: {env.score}"
+            )
+
             if render:
-                time.sleep(0.05)
+                env.render()
 
-        print(f"Episode Finished | Deliveries: {env.score} | Steps: {steps} | Total Reward: {total_reward:.2f}")
+        print(
+            f"Episode Finished | "
+            f"Deliveries: {env.score} | "
+            f"Steps: {step_count} | "
+            f"Total Reward: {episode_total_reward:.2f}"
+        )
 
     env.close()
 
+
 if __name__ == "__main__":
-    # Change 'best_model.pt' to whatever your filename is
-    test_policy(model_path="best_model.pt", num_episodes=5, render=True)
+    test_policy(model_path="checkpoints/best_model.pt", num_episodes=5, render=True)

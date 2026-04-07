@@ -2,9 +2,9 @@ import pygame
 from sys import exit
 import random
 
-from constants import *
-from world import create_map
-from robot import Robot
+from GameFiles.constants import *
+from GameFiles.world import create_map
+from GameFiles.robot import Robot
 
 pygame.init()
 window = pygame.display.set_mode((GRID_WIDTH * GRID_SPACING, GRID_HEIGHT * GRID_SPACING))

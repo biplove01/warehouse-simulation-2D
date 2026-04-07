@@ -7,155 +7,217 @@ from collections import deque
 import os
 import pickle
 
-# Ensure you have your environment file ready
 from warehouse_env import WarehouseEnv
 
-# GPU/CPU Setup
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Training on: {DEVICE}")
+# ─── DEVICE SETUP ────────────────────────────────────────────────────────────
+
+compute_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Training on: {compute_device}")
+
+RENDER_DURING_TRAINING = False
+RENDER_EVERY_N_EPISODES = 1
 
 
 # ─── ARCHITECTURE ────────────────────────────────────────────────────────────
 
-class QNet(nn.Module):
-    """ Dueling DQN Architecture """
+class QNetwork(nn.Module):
+    """Dueling DQN Architecture."""
 
     def __init__(self, state_dim, action_dim):
         super().__init__()
-        # Shared feature extractor
-        self.feature = nn.Sequential(
-            nn.Linear(state_dim, 128), nn.ReLU(),
-            nn.Linear(128, 128), nn.ReLU()
-        )
-        # Advantage stream: How much better is action A than average?
-        self.advantage = nn.Linear(128, action_dim)
-        # Value stream: How good is it to be in this state?
-        self.value = nn.Linear(128, 1)
 
-    def forward(self, x):
-        x = self.feature(x)
-        val = self.value(x)
-        adv = self.advantage(x)
-        # Combine streams: Q(s,a) = V(s) + (A(s,a) - mean(A))
-        return val + (adv - adv.mean(dim=1, keepdim=True))
+        # Shared feature extractor
+        self.shared_features = nn.Sequential(
+            nn.Linear(state_dim, 128), nn.ReLU(),
+            nn.Linear(128, 128), nn.ReLU(),
+        )
+
+        # Advantage stream: How much better is action A than the average action?
+        self.advantage_stream = nn.Linear(128, action_dim)
+
+        # Value stream: How good is it to simply be in this state?
+        self.value_stream = nn.Linear(128, 1)
+
+    def forward(self, state):
+        features = self.shared_features(state)
+        state_value = self.value_stream(features)
+        action_advantages = self.advantage_stream(features)
+
+        # Combine streams: Q(s, a) = V(s) + (A(s, a) - mean(A))
+        return state_value + (action_advantages - action_advantages.mean(dim=1, keepdim=True))
 
 
 # ─── TRAINING FUNCTION ───────────────────────────────────────────────────────
 
 def train():
-    # 1. Initialize Environment and Networks
-    env = WarehouseEnv()
+
+    # 1. Initialize environment and networks
+    #    Render mode is set once here based on the toggle above.
+    #    If rendering every N episodes, we start with "human" mode on
+    #    and let the episode loop control when to actually call render().
+    render_mode = "human" if RENDER_DURING_TRAINING else None
+    env = WarehouseEnv(render_mode=render_mode)
+
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
-    policy_net = QNet(state_dim, action_dim).to(DEVICE)
-    target_net = QNet(state_dim, action_dim).to(DEVICE)
-    target_net.load_state_dict(policy_net.state_dict())
+    policy_network = QNetwork(state_dim, action_dim).to(compute_device)
+    target_network = QNetwork(state_dim, action_dim).to(compute_device)
+    target_network.load_state_dict(policy_network.state_dict())
 
-    optimizer = optim.Adam(policy_net.parameters(), lr=1e-4)
-    memory = deque(maxlen=50000)
+    optimizer = optim.Adam(policy_network.parameters(), lr=1e-4)
+    replay_buffer = deque(maxlen=50000)
 
     # 2. Hyperparameters
-    batch_size = 64
-    gamma = 0.99
+    batch_size = 128
+    discount_factor = 0.98
     epsilon = 1.0
-    epsilon_min = 0.05
-    epsilon_decay = 0.995
-    target_update_freq = 10
-    save_freq = 50
-    total_episodes = 2000
+    epsilon_min = 0.1
+    epsilon_decay = 0.998
+    target_network_update_frequency = 10
+    checkpoint_save_frequency = 50
+    total_episodes = 2500
 
     # 3. Bookkeeping
     os.makedirs("checkpoints", exist_ok=True)
-    best_score = -1
+    best_delivery_score = -1
 
-    # ─── MAIN EPISODE LOOP ───
+    # ─── MAIN EPISODE LOOP ───────────────────────────────────────────────────
+
     for episode in range(total_episodes):
-        state, _ = env.reset()
-        total_reward = 0
-        done = False
+        current_state, _ = env.reset()
+        episode_total_reward = 0
+        is_done = False
 
-        while not done:
-            # A. Action Selection (Epsilon-Greedy)
+        # Decide whether to render this episode
+        should_render_this_episode = (
+            RENDER_DURING_TRAINING and (episode % RENDER_EVERY_N_EPISODES == 0)
+        )
+
+        while not is_done:
+
+            # A. Action selection via epsilon-greedy policy
             if random.random() < epsilon:
-                action = env.action_space.sample()
+                if random.random() < 0.7:  # 70% of the time be smart, 30% be random
+                    chosen_action = env.heuristic_action()
+                else:
+                    chosen_action = env.action_space.sample()
             else:
                 with torch.no_grad():
-                    state_t = torch.as_tensor(state, dtype=torch.float32, device=DEVICE).unsqueeze(0)
-                    action = policy_net(state_t).argmax().item()
+                    state_tensor = torch.as_tensor(
+                        current_state, dtype=torch.float32, device=compute_device
+                    ).unsqueeze(0)
+                    chosen_action = policy_network(state_tensor).argmax().item()
 
-            # B. Environment Step
-            next_state, reward, term, trunc, _ = env.step(action)
-            done = term or trunc
+            # B. Step the environment
+            next_state, reward, terminated, truncated, _ = env.step(chosen_action)
+            is_done = terminated or truncated
 
-            # C. Store Transition
-            memory.append((state, action, reward, next_state, done))
-            state = next_state
-            total_reward += reward
+            # C. Render this step if visual mode is on for this episode
+            if should_render_this_episode:
+                env.render()
 
-            # D. Optimization Step
-            if len(memory) > batch_size:
-                # Sample random batch from buffer
-                batch = random.sample(memory, batch_size)
-                s_batch, a_batch, r_batch, ns_batch, d_batch = zip(*batch)
+            # D. Store transition in replay buffer
+            replay_buffer.append((current_state, chosen_action, reward, next_state, is_done))
+            current_state = next_state
+            episode_total_reward += reward
 
-                # Convert to Tensors
-                s_t = torch.as_tensor(np.array(s_batch), dtype=torch.float32, device=DEVICE)
-                a_t = torch.as_tensor(a_batch, dtype=torch.long, device=DEVICE).unsqueeze(1)
-                r_t = torch.as_tensor(r_batch, dtype=torch.float32, device=DEVICE).unsqueeze(1)
-                ns_t = torch.as_tensor(np.array(ns_batch), dtype=torch.float32, device=DEVICE)
-                d_t = torch.as_tensor(d_batch, dtype=torch.float32, device=DEVICE).unsqueeze(1)
+            # E. Optimization step (only when buffer has enough samples)
+            if len(replay_buffer) > batch_size:
 
-                # Current Q values
-                current_q = policy_net(s_t).gather(1, a_t)
+                # Sample a random mini-batch
+                sampled_batch = random.sample(replay_buffer, batch_size)
+                (
+                    states_batch,
+                    actions_batch,
+                    rewards_batch,
+                    next_states_batch,
+                    dones_batch,
+                ) = zip(*sampled_batch)
 
-                # Double DQN: Policy picks action, Target evaluates
+                # Convert to tensors
+                states_tensor = torch.as_tensor(
+                    np.array(states_batch), dtype=torch.float32, device=compute_device
+                )
+                actions_tensor = torch.as_tensor(
+                    actions_batch, dtype=torch.long, device=compute_device
+                ).unsqueeze(1)
+                rewards_tensor = torch.as_tensor(
+                    rewards_batch, dtype=torch.float32, device=compute_device
+                ).unsqueeze(1)
+                next_states_tensor = torch.as_tensor(
+                    np.array(next_states_batch), dtype=torch.float32, device=compute_device
+                )
+                dones_tensor = torch.as_tensor(
+                    dones_batch, dtype=torch.float32, device=compute_device
+                ).unsqueeze(1)
+
+                # Current Q-values for the actions that were actually taken
+                current_q_values = policy_network(states_tensor).gather(1, actions_tensor)
+
+                # Double DQN: policy network picks the next action,
+                # target network evaluates it
                 with torch.no_grad():
-                    next_actions = policy_net(ns_t).argmax(dim=1, keepdim=True)
-                    next_q_values = target_net(ns_t).gather(1, next_actions)
-                    expected_q = r_t + (gamma * next_q_values * (1 - d_t))
+                    best_next_actions = policy_network(next_states_tensor).argmax(
+                        dim=1, keepdim=True
+                    )
+                    next_q_values = target_network(next_states_tensor).gather(
+                        1, best_next_actions
+                    )
+                    expected_q_values = rewards_tensor + (
+                        discount_factor * next_q_values * (1 - dones_tensor)
+                    )
 
-                # Loss Calculation & Backprop
-                loss = nn.MSELoss()(current_q, expected_q)
+                # Compute loss and backpropagate
+                loss = nn.MSELoss()(current_q_values, expected_q_values)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
-        # ─── POST-EPISODE LOGIC ───
+        # ─── POST-EPISODE LOGIC ──────────────────────────────────────────────
 
-        # Update Target Network
-        if episode % target_update_freq == 0:
-            target_net.load_state_dict(policy_net.state_dict())
+        # Periodically sync target network weights with policy network
+        if episode % target_network_update_frequency == 0:
+            target_network.load_state_dict(policy_network.state_dict())
 
-        # Save Best Model (based on deliveries/score)
-        if env.score >= best_score:
-            best_score = env.score
-            torch.save(policy_net.state_dict(), "checkpoints/best_model.pt")
-            print(f"  ★ New Best Score: {best_score}! Model Saved.")
+        # Save model if this episode achieved a new best delivery score
+        if env.score > best_delivery_score:
+            best_delivery_score = env.score
+            torch.save(policy_network.state_dict(), "checkpoints/best_model.pt")
+            print(f"  ★ New Best Score: {best_delivery_score}! Model saved.")
 
-        # Regular Checkpoint & Buffer Saving
-        if episode % save_freq == 0 and episode > 0:
-            ckpt_path = f"checkpoints/model_ep{episode}.pt"
-            torch.save({
-                'episode': episode,
-                'policy': policy_net.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'epsilon': epsilon
-            }, ckpt_path)
+        # Save periodic checkpoint and replay buffer for resuming training
+        if episode % checkpoint_save_frequency == 0 and episode > 0:
+            checkpoint_path = f"checkpoints/model_ep_latest.pt"
+            torch.save(
+                {
+                    "episode": episode,
+                    "policy": policy_network.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "epsilon": epsilon,
+                },
+                checkpoint_path,
+            )
 
-            # Save Buffer for Resuming Training
-            buffer_path = f"checkpoints/buffer_ep{episode}.pkl"
-            with open(buffer_path, "wb") as f:
-                pickle.dump(list(memory), f)
-            print(f"  💾 Checkpoint & Buffer saved at Ep {episode}")
+            replay_buffer_path = f"checkpoints/buffer_ep_latest.pkl"
+            with open(replay_buffer_path, "wb") as buffer_file:
+                pickle.dump(list(replay_buffer), buffer_file)
 
-        # Epsilon Decay
+            print(f"  💾 Checkpoint & buffer saved at episode {episode}")
+
+        # Decay epsilon toward its minimum floor
         epsilon = max(epsilon_min, epsilon * epsilon_decay)
 
-        # Logging
-        if episode % 1 == 0:
-            print(
-                f"Ep {episode:4d} | Score: {env.score:2d} | Reward: {total_reward:7.2f} | Eps: {epsilon:.3f} | Buf: {len(memory)}")
+        # Log episode summary
+        render_indicator = " 👁" if should_render_this_episode else ""
+        print(
+            f"Ep {episode:4d} | "
+            f"Score: {env.score:2d} | "
+            f"Reward: {episode_total_reward:7.2f} | "
+            f"Epsilon: {epsilon:.3f} | "
+            f"Buffer: {len(replay_buffer)}"
+            f"{render_indicator}"
+        )
 
 
 if __name__ == "__main__":
