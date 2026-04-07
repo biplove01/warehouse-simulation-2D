@@ -537,18 +537,29 @@ class WarehouseMultiEnv(ParallelEnv):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.close()
+
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                # Click a shelf to spawn a package (human-play mode)
-                gx = event.pos[0] // GRID_SPACING
-                gy = event.pos[1] // GRID_SPACING
-                shelf = self._get_shelf_at(gx, gy)
-                if shelf and not shelf.has_box:
-                    shelf.has_box = True
-                    shelf.image   = shelf.loaded_image
-                    pkg = (gx, gy)
+                mx, my = event.pos
+
+                clicked_shelf = None
+                for shelf in self.shelves:
+                    sgx, sgy = self._obj_grid(shelf)
+                    # Recompute pixel bounds directly from grid position
+                    px = PADDING_BORDER + sgx * GRID_SPACING
+                    py = PADDING_BORDER + sgy * GRID_SPACING
+                    # Use full GRID_SPACING so there's no gap between tiles
+                    if px <= mx < px + GRID_SPACING and py <= my < py + GRID_SPACING:
+                        clicked_shelf = shelf
+                        break
+
+                if clicked_shelf and not clicked_shelf.has_box:
+                    clicked_shelf.has_box = True
+                    clicked_shelf.image   = clicked_shelf.loaded_image
+                    pkg = self._obj_grid(clicked_shelf)
                     self.target_queue.append(pkg)
-                    self._pkg_dist_maps[pkg] = self._bfs_dist_map(gx, gy)
+                    self._pkg_dist_maps[pkg] = self._bfs_dist_map(*pkg)
                     self._assign_packages()
+                    
 
         canvas = pygame.Surface((GRID_WIDTH * GRID_SPACING, GRID_HEIGHT * GRID_SPACING))
         canvas.fill("#5FCB9B")
@@ -566,6 +577,14 @@ class WarehouseMultiEnv(ParallelEnv):
 
         for obj in self.shelves:
             canvas.blit(obj.image, obj)
+        
+         # DEBUG: draw shelf bounding boxes
+        for shelf in self.shelves:
+            sgx, sgy = self._obj_grid(shelf)
+            px = PADDING_BORDER + sgx * GRID_SPACING
+            py = PADDING_BORDER + sgy * GRID_SPACING
+            pygame.draw.rect(canvas, (255, 0, 0),
+                            pygame.Rect(px, py, GRID_SPACING, GRID_SPACING), 1)
 
         # HUD
         hud_text = (f"Score: {self.score}/{self.goal_deliveries}  "
@@ -577,6 +596,8 @@ class WarehouseMultiEnv(ParallelEnv):
         self.window.blit(canvas, canvas.get_rect())
         pygame.display.update()
         self.clock.tick(self.metadata["render_fps"])
+
+       
 
     def close(self):
         if self.window is not None:

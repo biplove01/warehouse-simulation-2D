@@ -135,14 +135,14 @@ class IDQNTrainer:
         env: WarehouseMultiEnv,
         lr: float = 1e-4,  # was 3e-4
         target_sync_freq: int = 200,  # was 400
-        epsilon_decay: float = 0.998,  # keep your current value
+        epsilon_decay: float = 0.995,  # keep your current value
         gamma:            float = 0.97,   # was 0.99 — lower gamma can help with faster reward propagation in this task
         # batch_size:       int   = 1024,    # ↑ from 256 — keeps GPU fed
         batch_size:       int   = 256,    # ↑ from 256 — keeps GPU fed
 
         buffer_capacity:  int   = 150_000,
         warmup_steps:     int   = 2_000,
-        epsilon_start:    float = 0.64,
+        epsilon_start:    float = 0.84,
         epsilon_end:      float = 0.05,
         # grad_updates_per_step: int = 4,    # multiple gradient steps per env step
         grad_updates_per_step: int = 1,    # multiple gradient steps per env step
