@@ -257,7 +257,7 @@ class IDQNTrainer:
             log_every: int = 10,
             agent_stagnation_limit: int = 600,
             max_ep_steps: int = 4000,
-            heartbeat_every: int = 200,  # ← print a mid-episode pulse every N steps
+            heartbeat_every: int = 200, 
     ):
         import time
         os.makedirs(save_dir, exist_ok=True)

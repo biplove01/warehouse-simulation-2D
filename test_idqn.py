@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 from collections import deque
 
-from warehouse_multi_env import WarehouseMultiEnv, NUM_AGENTS, OBS_SIZE, N_ACTIONS
+from Environment.warehouse_multi_env import WarehouseMultiEnv, NUM_AGENTS, OBS_SIZE, N_ACTIONS
 
 # ── Device ────────────────────────────────────────────────────────────────────
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -63,20 +63,6 @@ class AgentEvaluator:
 
         # Environment
         self.env = WarehouseMultiEnv(render_mode="human" if render else None)
-
-    # def _load_model(self, path: str):
-    #     if not os.path.exists(path):
-    #         raise FileNotFoundError(f"Model not found: {path}")
-    #     ckpt  = torch.load(path, map_location=DEVICE)
-    #     state = ckpt.get("policy", ckpt)
-    #     self.policy.load_state_dict(state)
-
-    #     # Print checkpoint metadata if available
-    #     if isinstance(ckpt, dict) and "episode" in ckpt:
-    #         print(f"  Checkpoint from episode : {ckpt['episode']}")
-    #         print(f"  Best score during train : {ckpt.get('best_score', 'N/A')}")
-    #         print(f"  Epsilon at save         : {ckpt.get('epsilon', 'N/A'):.4f}")
-    #     print(f"  Model loaded from       : {path}\n")
 
     def _load_model(self, path: str):
         if not os.path.exists(path):

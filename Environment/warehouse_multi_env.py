@@ -16,9 +16,9 @@ import functools
 import numpy as np
 from collections import deque
 import pygame
-from world import create_map
-from constants import *
-from robot import Robot
+from GameFiles.world import create_map
+from GameFiles.constants import *
+from GameFiles.robot import Robot
 import random
 
 NUM_AGENTS = NUMBER_OF_ROBOTS          # 5 — from your constants.py
