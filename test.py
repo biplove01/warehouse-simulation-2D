@@ -7,7 +7,7 @@ from trainer import QNetwork
 compute_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def test_policy(model_path="checkpoints/model_ep_latest.pt", num_episodes=5, render=True):
+def test_policy(model_path="checkpoints/best_model.pt", num_episodes=5, render=True):
 
     # 1. Setup environment
     env = WarehouseEnv(render_mode="human" if render else None)

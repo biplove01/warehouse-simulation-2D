@@ -108,11 +108,29 @@ class WarehouseEnv(gym.Env):
     def _bfs_distance_map(self, start_grid_x, start_grid_y):
         """
         Precomputes BFS shortest distances from every reachable cell
-        to the target cell at (start_grid_x, start_grid_y).
-        """
-        distance_map = {(start_grid_x, start_grid_y): 0}
-        search_queue = deque([(start_grid_x, start_grid_y, 0)])
+        to the nearest walkable cell adjacent to (start_grid_x, start_grid_y).
 
+        We seed the BFS from all walkable neighbors of the target cell,
+        not the target cell itself — because the target (shelf or dropoff)
+        is always an obstacle the robot cannot stand on.
+        """
+        distance_map = {}
+        search_queue = deque()
+
+        # Seed the BFS from all walkable neighbors of the target cell.
+        # These are the cells the robot can actually stand on to interact.
+        for delta_x, delta_y in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            neighbor_x = start_grid_x + delta_x
+            neighbor_y = start_grid_y + delta_y
+
+            is_in_bounds = 0 <= neighbor_x < GRID_WIDTH and 0 <= neighbor_y < GRID_HEIGHT
+            is_walkable = (neighbor_x, neighbor_y) not in self.obstacle_positions
+
+            if is_in_bounds and is_walkable and (neighbor_x, neighbor_y) not in distance_map:
+                distance_map[(neighbor_x, neighbor_y)] = 0
+                search_queue.append((neighbor_x, neighbor_y, 0))
+
+        # The rest of the BFS loop stays exactly the same
         while search_queue:
             current_x, current_y, current_dist = search_queue.popleft()
 
@@ -131,13 +149,42 @@ class WarehouseEnv(gym.Env):
 
         return distance_map
 
+    # NORMAL SPAWNING METHOD
+
+    # def _spawn_new_target(self):
+    #     """Clear all shelves and place a box on a new random shelf."""
+    #     for shelf in self.shelves:
+    #         shelf.has_box = False
+    #         shelf.image = shelf.empty_image
+
+    #     new_target_shelf = random.choice(self.shelves)
+    #     new_target_shelf.has_box = True
+    #     new_target_shelf.image = new_target_shelf.loaded_image
+
+    #     self.target_grid_x, self.target_grid_y = self._to_grid_coords(new_target_shelf)
+    #     self.target_distance_map = self._bfs_distance_map(
+    #         self.target_grid_x, self.target_grid_y
+    #     )
+
+
+    # TARGETED SPAWNING METHOD 
     def _spawn_new_target(self):
-        """Clear all shelves and place a box on a new random shelf."""
+        """Clear all shelves and place a box on a shelf in the extreme left/right zones."""
         for shelf in self.shelves:
             shelf.has_box = False
             shelf.image = shelf.empty_image
 
-        new_target_shelf = random.choice(self.shelves)
+        # Restrict spawning to the extreme left (col 1–2) and right (col 19–20) shelves
+        # These are the zones where the robot currently underperforms.
+        extreme_zone_shelves = [
+            shelf for shelf in self.shelves
+            if self._to_grid_coords(shelf)[0] in {1, 2, 19, 20}
+        ]
+
+        # Fall back to all shelves if the filtered list is somehow empty
+        spawn_pool = extreme_zone_shelves if extreme_zone_shelves else self.shelves
+
+        new_target_shelf = random.choice(spawn_pool)
         new_target_shelf.has_box = True
         new_target_shelf.image = new_target_shelf.loaded_image
 

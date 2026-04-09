@@ -71,7 +71,7 @@ def train():
     # 2. Hyperparameters
     batch_size = 128
     discount_factor = 0.98
-    epsilon = 1.0
+    epsilon = 0.65
     epsilon_min = 0.1
     epsilon_decay = 0.998
     target_network_update_frequency = 10
