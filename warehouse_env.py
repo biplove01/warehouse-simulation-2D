@@ -17,7 +17,7 @@ class RewardManager:
         self.step_penalty = -0.05
         self.collision_penalty = -0.5
         self.wait_penalty = -0.2
-        self.failed_interact_penalty = -1.5   # Much steeper than a plain wait
+        self.failed_interact_penalty = -2.5   # Much steeper than a plain wait
 
         self.progress_reward_scale = 2.0
         self.regress_penalty_scale = 4.0
@@ -104,6 +104,7 @@ class WarehouseEnv(gym.Env):
         grid_x = round((obj.x - PADDING_BORDER) / GRID_SPACING)
         grid_y = round((obj.y - PADDING_BORDER) / GRID_SPACING)
         return grid_x, grid_y
+
 
     def _bfs_distance_map(self, start_grid_x, start_grid_y):
         """
