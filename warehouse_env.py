@@ -179,7 +179,9 @@ class WarehouseEnv(gym.Env):
         # These are the zones where the robot currently underperforms.
         extreme_zone_shelves = [
             shelf for shelf in self.shelves
-            if self._to_grid_coords(shelf)[0] in {1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 29}
+            if self._to_grid_coords(shelf)[0] in {1, 2, 19, 20}
+
+            # if self._to_grid_coords(shelf)[0] in {1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 20}
         ]
 
         # Fall back to all shelves if the filtered list is somehow empty
@@ -366,9 +368,15 @@ class WarehouseEnv(gym.Env):
         # 4. Apply revisit penalty to discourage oscillation (movement actions only)
         if action < 4:
             current_position = (robot.grid_x, robot.grid_y)
-            if current_position in self.recent_positions:
-                reward -= 0.3
+            visit_count_in_recent_history = self.recent_positions.count(current_position)
+
+            if visit_count_in_recent_history >= 2:
+                reward -= 3.0  # heavy penalty for visiting same cell more than twice
+            elif visit_count_in_recent_history == 1:
+                reward -= 0.3  # mild penalty for first revisit
+
             self.recent_positions.append(current_position)
+            
 
         # 5. Episode ends only when step limit is reached
         is_done = self.steps >= 500
