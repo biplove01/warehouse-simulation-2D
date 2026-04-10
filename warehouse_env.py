@@ -179,9 +179,9 @@ class WarehouseEnv(gym.Env):
         # These are the zones where the robot currently underperforms.
         extreme_zone_shelves = [
             shelf for shelf in self.shelves
-            if self._to_grid_coords(shelf)[0] in {1, 2, 19, 20}
+            # if self._to_grid_coords(shelf)[0] in {1, 2, 19, 20}
 
-            # if self._to_grid_coords(shelf)[0] in {1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 20}
+            if self._to_grid_coords(shelf)[0] in {1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 20}
         ]
 
         # Fall back to all shelves if the filtered list is somehow empty
