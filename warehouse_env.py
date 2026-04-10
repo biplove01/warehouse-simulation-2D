@@ -16,7 +16,7 @@ class RewardManager:
     def __init__(self):
         self.step_penalty = -0.05
         self.collision_penalty = -0.5
-        self.wait_penalty = -0.2
+        self.wait_penalty = -1.5 # increased for behavour shaping
         self.failed_interact_penalty = -2.5   # Much steeper than a plain wait
 
         self.progress_reward_scale = 2.0
@@ -179,7 +179,7 @@ class WarehouseEnv(gym.Env):
         # These are the zones where the robot currently underperforms.
         extreme_zone_shelves = [
             shelf for shelf in self.shelves
-            if self._to_grid_coords(shelf)[0] in {1, 2, 19, 20}
+            if self._to_grid_coords(shelf)[0] in {1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 29}
         ]
 
         # Fall back to all shelves if the filtered list is somehow empty
@@ -199,6 +199,7 @@ class WarehouseEnv(gym.Env):
 
         self.steps = 0
         self.score = 0
+        self.recent_positions = deque(maxlen=10)  
 
         # Set dropoff grid position using the central platform
         central_platform = self.dropoff_platforms[len(self.dropoff_platforms) // 2]
@@ -288,7 +289,8 @@ class WarehouseEnv(gym.Env):
         observation.append(can_deliver)
 
         return np.array(observation, dtype=np.float32)
-
+    
+    
     def step(self, action):
         self.steps += 1
         robot = self.robot
@@ -332,27 +334,26 @@ class WarehouseEnv(gym.Env):
                 abs(robot.grid_x - self.dropoff_grid_x)
                 + abs(robot.grid_y - self.dropoff_grid_y)
             )
+            is_directly_adjacent_to_target = (
+                (robot.grid_x == self.target_grid_x and abs(robot.grid_y - self.target_grid_y) == 1) or
+                (robot.grid_y == self.target_grid_y and abs(robot.grid_x - self.target_grid_x) == 1)
+            )
 
-            if not robot.loaded and dist_to_target_shelf == 1:
+            if not robot.loaded and is_directly_adjacent_to_target:
                 robot.loaded = True
                 current_event = "pickup"
-                # print(f"  [DEBUG] Step {self.steps}: PICKUP at robot=({robot.grid_x},{robot.grid_y}), shelf=({self.target_grid_x},{self.target_grid_y}), dist={dist_to_target_shelf}")
 
             elif robot.loaded and dist_to_dropoff <= 2:
                 robot.loaded = False
                 self.score += 1
                 current_event = "delivery"
-                # print(f"  [DEBUG] Step {self.steps}: DELIVERY at robot=({robot.grid_x},{robot.grid_y}), dropoff=({self.dropoff_grid_x},{self.dropoff_grid_y}), dist={dist_to_dropoff}, score={self.score}")
-
                 self._spawn_new_target()
-            else:
-                current_event = "failed_interact"   
 
-                # print(f"  [DEBUG] Step {self.steps}: FAILED INTERACT at robot=({robot.grid_x},{robot.grid_y}), loaded={robot.loaded}, dist_to_shelf={dist_to_target_shelf}, dist_to_dropoff={dist_to_dropoff}")
+            else:
+                current_event = "failed_interact"
 
         else:
             current_event = "wait"
-
 
         # 3. Calculate reward based on event, distance progress, and proximity
         distance_after = active_distance_map.get((robot.grid_x, robot.grid_y), 50)
@@ -362,10 +363,18 @@ class WarehouseEnv(gym.Env):
             proximity_bonus=earned_proximity_bonus,
         )
 
-        # 4. Episode ends only when step limit is reached
+        # 4. Apply revisit penalty to discourage oscillation (movement actions only)
+        if action < 4:
+            current_position = (robot.grid_x, robot.grid_y)
+            if current_position in self.recent_positions:
+                reward -= 0.3
+            self.recent_positions.append(current_position)
+
+        # 5. Episode ends only when step limit is reached
         is_done = self.steps >= 500
 
         return self._get_observation(), reward, is_done, False, {}
+
 
     def heuristic_action(self):
         """
@@ -393,18 +402,19 @@ class WarehouseEnv(gym.Env):
             is_passable = (next_x, next_y) not in self.obstacle_positions
 
             if is_in_bounds and is_passable:
+
                 neighbor_distance = active_distance_map.get((next_x, next_y), 50)
                 if neighbor_distance < best_distance:
                     best_distance = neighbor_distance
                     best_action = action_index
 
-        # If adjacent to the target, interact
+        # If adjacent to the target, interact — but only when no better move exists
         if not robot.loaded:
             dist_to_target_shelf = (
                 abs(robot.grid_x - self.target_grid_x)
                 + abs(robot.grid_y - self.target_grid_y)
             )
-            if dist_to_target_shelf == 1:
+            if dist_to_target_shelf == 1 and best_action is None:
                 return 4  # Interact
 
         elif robot.loaded:
