@@ -71,12 +71,12 @@ def train():
     # 2. Hyperparameters
     batch_size = 128
     discount_factor = 0.98
-    epsilon = 0.65
-    epsilon_min = 0.05
+    epsilon = 0.55
+    epsilon_min = 0.2
     epsilon_decay = 0.998
     target_network_update_frequency = 10
     checkpoint_save_frequency = 50
-    total_episodes = 2500
+    total_episodes = 1600
 
     # 3. Bookkeeping
     os.makedirs("checkpoints", exist_ok=True)
@@ -98,7 +98,7 @@ def train():
 
             # A. Action selection via epsilon-greedy policy
             if random.random() < epsilon:
-                if random.random() < 0.7:  # 70% of the time be smart, 30% be random
+                if random.random() < 0.6:  # 60% of the time be smart, 40% be random
                     chosen_action = env.heuristic_action()
                 else:
                     chosen_action = env.action_space.sample()

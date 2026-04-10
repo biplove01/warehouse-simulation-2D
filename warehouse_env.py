@@ -16,7 +16,7 @@ class RewardManager:
     def __init__(self):
         self.step_penalty = -0.05
         self.collision_penalty = -0.5
-        self.wait_penalty = -1.5 # increased for behavour shaping
+        self.wait_penalty = -3 # increased for behavour shaping
         self.failed_interact_penalty = -2.5   # Much steeper than a plain wait
 
         self.progress_reward_scale = 2.0
