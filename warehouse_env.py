@@ -15,8 +15,8 @@ class RewardManager:
 
     def __init__(self):
         self.step_penalty = -0.05
-        self.collision_penalty = -0.5
-        self.wait_penalty = -3 # increased for behavour shaping
+        self.collision_penalty = -3
+        self.wait_penalty = -5 # increased for behavour shaping
         self.failed_interact_penalty = -2.5   # Much steeper than a plain wait
 
         self.progress_reward_scale = 2.0
@@ -181,7 +181,8 @@ class WarehouseEnv(gym.Env):
             shelf for shelf in self.shelves
             # if self._to_grid_coords(shelf)[0] in {1, 2, 19, 20}
 
-            if self._to_grid_coords(shelf)[0] in {1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 20}
+            # if self._to_grid_coords(shelf)[0] in {1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 20}
+            if self._to_grid_coords(shelf)[0] in {5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
         ]
 
         # Fall back to all shelves if the filtered list is somehow empty
