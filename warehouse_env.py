@@ -17,9 +17,9 @@ class RewardManager:
         self.step_penalty = -0.05
         self.collision_penalty = -3
         self.wait_penalty = -5 # increased for behavour shaping
-        self.failed_interact_penalty = -2.5   # Much steeper than a plain wait
+        self.failed_interact_penalty = -4   # Much steeper than a plain wait
 
-        self.progress_reward_scale = 2.0
+        self.progress_reward_scale = 1.0
         self.regress_penalty_scale = 4.0
         self.pickup_bonus = 10.0
         self.delivery_bonus = 20.0
@@ -75,8 +75,8 @@ class WarehouseEnv(gym.Env):
             for obj in self.shelves + self.dropoff_platforms
         }
 
-        # Observation: [x, y, loaded, target_dx, target_dy, dropoff_dx, dropoff_dy] + 8 adjacent cells + can_pickup + can_deliver
-        self.observation_size = 7 + 8 + 2
+        # Observation: [x, y, loaded, target_dx, target_dy, dropoff_dx, dropoff_dy] + 8 adjacent cells + can_pickup + can_deliver + last_move_dx + last_move_dy
+        self.observation_size = 7 + 8 + 2 + 2
         self.observation_space = spaces.Box(
             low=-1.0, high=1.0, shape=(self.observation_size,), dtype=np.float32
         )
@@ -181,8 +181,8 @@ class WarehouseEnv(gym.Env):
             shelf for shelf in self.shelves
             # if self._to_grid_coords(shelf)[0] in {1, 2, 19, 20}
 
-            # if self._to_grid_coords(shelf)[0] in {1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 20}
-            if self._to_grid_coords(shelf)[0] in {5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+            if self._to_grid_coords(shelf)[0] in {1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 20}
+            # if self._to_grid_coords(shelf)[0] in {5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
         ]
 
         # Fall back to all shelves if the filtered list is somehow empty
@@ -203,6 +203,7 @@ class WarehouseEnv(gym.Env):
         self.steps = 0
         self.score = 0
         self.recent_positions = deque(maxlen=8)  
+        self.last_action = -1 
 
         # Set dropoff grid position using the central platform
         central_platform = self.dropoff_platforms[len(self.dropoff_platforms) // 2]
@@ -249,6 +250,19 @@ class WarehouseEnv(gym.Env):
 
     def _get_observation(self):
         robot = self.robot
+        
+
+        last_move_x = 0.0
+        last_move_y = 0.0
+        if self.last_action == 0:   # Up
+            last_move_y = -1.0
+        elif self.last_action == 1: # Down
+            last_move_y = 1.0
+        elif self.last_action == 2: # Left
+            last_move_x = -1.0
+        elif self.last_action == 3: # Right
+            last_move_x = 1.0
+
 
         # Determine the current navigation target based on whether robot is loaded
         if robot.loaded:
@@ -286,8 +300,12 @@ class WarehouseEnv(gym.Env):
         # Is the robot currently in a valid position to deliver?
         can_deliver = float(
             robot.loaded
-            and abs(robot.grid_x - self.dropoff_grid_x) + abs(robot.grid_y - self.dropoff_grid_y) <= 2
+            and abs(robot.grid_x - self.dropoff_grid_x) + abs(robot.grid_y - self.dropoff_grid_y) == 1
         )
+
+        
+        observation.append(last_move_x)
+        observation.append(last_move_y)
         observation.append(can_pickup)
         observation.append(can_deliver)
 
@@ -371,17 +389,17 @@ class WarehouseEnv(gym.Env):
             current_position = (robot.grid_x, robot.grid_y)
             visit_count_in_recent_history = self.recent_positions.count(current_position)
 
-            if visit_count_in_recent_history >= 2:
-                reward -= 5.0  # heavy penalty for visiting same cell more than twice
+            if visit_count_in_recent_history > 2:
+                reward -= 4.0  # heavy penalty for visiting same cell more than twice
             elif visit_count_in_recent_history == 1:
                 reward -= 0.3  # mild penalty for first revisit
 
             self.recent_positions.append(current_position)
             
 
-        # 5. Episode ends only when step limit is reached
         is_done = self.steps >= 500
-
+        self.last_action = action
+        
         return self._get_observation(), reward, is_done, False, {}
 
 
@@ -431,7 +449,7 @@ class WarehouseEnv(gym.Env):
                 abs(robot.grid_x - self.dropoff_grid_x)
                 + abs(robot.grid_y - self.dropoff_grid_y)
             )
-            if dist_to_dropoff <= 2:
+            if dist_to_dropoff == 1:
                 return 4  # Interact
 
         # Fall back to a random movement action if no better move found (e.g. trapped)
@@ -503,4 +521,4 @@ class WarehouseEnv(gym.Env):
         self.screen.blit(robot_image, (robot_pixel_x + center_offset_x, robot_pixel_y + center_offset_y))
 
         pygame.display.flip()
-        self.clock.tick(15)
+        self.clock.tick(20)
