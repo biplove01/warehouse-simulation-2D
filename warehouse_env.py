@@ -202,7 +202,7 @@ class WarehouseEnv(gym.Env):
 
         self.steps = 0
         self.score = 0
-        self.recent_positions = deque(maxlen=10)  
+        self.recent_positions = deque(maxlen=8)  
 
         # Set dropoff grid position using the central platform
         central_platform = self.dropoff_platforms[len(self.dropoff_platforms) // 2]
@@ -346,7 +346,7 @@ class WarehouseEnv(gym.Env):
                 robot.loaded = True
                 current_event = "pickup"
 
-            elif robot.loaded and dist_to_dropoff <= 2:
+            elif robot.loaded and dist_to_dropoff == 1:
                 robot.loaded = False
                 self.score += 1
                 current_event = "delivery"
@@ -372,7 +372,7 @@ class WarehouseEnv(gym.Env):
             visit_count_in_recent_history = self.recent_positions.count(current_position)
 
             if visit_count_in_recent_history >= 2:
-                reward -= 3.0  # heavy penalty for visiting same cell more than twice
+                reward -= 5.0  # heavy penalty for visiting same cell more than twice
             elif visit_count_in_recent_history == 1:
                 reward -= 0.3  # mild penalty for first revisit
 
@@ -503,4 +503,4 @@ class WarehouseEnv(gym.Env):
         self.screen.blit(robot_image, (robot_pixel_x + center_offset_x, robot_pixel_y + center_offset_y))
 
         pygame.display.flip()
-        self.clock.tick(30)
+        self.clock.tick(15)

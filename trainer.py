@@ -71,12 +71,12 @@ def train():
     # 2. Hyperparameters
     batch_size = 128
     discount_factor = 0.98
-    epsilon = 1
+    epsilon = 0.65
     epsilon_min = 0.05
     epsilon_decay = 0.999
     target_network_update_frequency = 10
     checkpoint_save_frequency = 50
-    total_episodes = 3500
+    total_episodes = 1000
 
     # 3. Bookkeeping
     os.makedirs("checkpoints", exist_ok=True)
