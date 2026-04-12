@@ -16,8 +16,8 @@ class RewardManager:
     def __init__(self):
         self.step_penalty = -0.05
         self.collision_penalty = -3
-        self.wait_penalty = -5 # increased for behavour shaping
-        self.failed_interact_penalty = -4   # Much steeper than a plain wait
+        self.wait_penalty = -5
+        self.failed_interact_penalty = -4
 
         self.progress_reward_scale = 1.0
         self.regress_penalty_scale = 4.0
@@ -26,14 +26,6 @@ class RewardManager:
         self.proximity_bonus = 0.5
 
     def calculate(self, event, distance_delta=0, proximity_bonus=0.0):
-        """
-        distance_delta: (previous_distance - current_distance)
-        Positive delta = robot moved closer. Negative delta = robot moved away.
-
-        Asymmetric scaling: moving away from the target is penalized
-        more harshly than moving toward it is rewarded. This strongly
-        discourages the robot from wandering or backtracking.
-        """
         if event == "collision":
             return self.collision_penalty
         if event == "pickup":
@@ -53,6 +45,10 @@ class RewardManager:
         return progress_reward + self.step_penalty + proximity_bonus
 
 
+ROBOT_HOME_GRID_X = 2
+ROBOT_HOME_GRID_Y = 0
+
+
 class WarehouseEnv(gym.Env):
 
     def __init__(self, render_mode=None):
@@ -60,139 +56,91 @@ class WarehouseEnv(gym.Env):
         self.render_mode = render_mode
         self.screen = None
         self.clock = None
-        self.window_size = (
-            GRID_WIDTH * GRID_SPACING + 2 * PADDING_BORDER,
-            GRID_HEIGHT * GRID_SPACING + 2 * PADDING_BORDER,
-        )
         self.reward_manager = RewardManager()
 
-        # Load map objects
         self.shelves, self.charge_stations, self.dropoff_platforms = create_map()
 
-        # Build obstacle set from shelves and dropoff platforms
         self.obstacle_positions = {
             self._to_grid_coords(obj)
             for obj in self.shelves + self.dropoff_platforms
         }
 
-        # Observation: [x, y, loaded, target_dx, target_dy, dropoff_dx, dropoff_dy] + 8 adjacent cells + can_pickup + can_deliver + last_move_dx + last_move_dy
+        # Observation: [x, y, loaded, target_dx, target_dy, dropoff_dx, dropoff_dy]
+        #              + 8 adjacent cells + last_move_x + last_move_y + can_pickup + can_deliver
         self.observation_size = 7 + 8 + 2 + 2
         self.observation_space = spaces.Box(
             low=-1.0, high=1.0, shape=(self.observation_size,), dtype=np.float32
         )
 
-        # Actions: Up, Down, Left, Right, Interact, Wait
         self.action_space = spaces.Discrete(6)
 
-        # Precompute BFS distance map from the central dropoff platform
         central_platform = self.dropoff_platforms[len(self.dropoff_platforms) // 2]
         self.dropoff_grid_x, self.dropoff_grid_y = self._to_grid_coords(central_platform)
         self.dropoff_distance_map = self._bfs_distance_map(
             self.dropoff_grid_x, self.dropoff_grid_y
         )
+        self.home_distance_map = self._bfs_distance_map(
+            ROBOT_HOME_GRID_X, ROBOT_HOME_GRID_Y,
+            target_is_walkable=True
+        )
 
-        # Track total episodes elapsed for curriculum learning
         self.total_episodes_elapsed = 0
 
-        # Placeholders so these attributes always exist before reset() is called
         self.target_grid_x = 0
         self.target_grid_y = 0
         self.target_distance_map = {}
 
     def _to_grid_coords(self, obj):
-        """Convert a world object's pixel position to grid coordinates."""
         grid_x = round((obj.x - PADDING_BORDER) / GRID_SPACING)
         grid_y = round((obj.y - PADDING_BORDER) / GRID_SPACING)
         return grid_x, grid_y
 
-
-    def _bfs_distance_map(self, start_grid_x, start_grid_y):
+    def _bfs_distance_map(self, start_grid_x, start_grid_y, target_is_walkable=False):
         """
-        Precomputes BFS shortest distances from every reachable cell
-        to the nearest walkable cell adjacent to (start_grid_x, start_grid_y).
-
-        We seed the BFS from all walkable neighbors of the target cell,
-        not the target cell itself — because the target (shelf or dropoff)
-        is always an obstacle the robot cannot stand on.
+        Computes BFS shortest distances to the target cell.
+        target_is_walkable=False: seeds from neighbors (for shelves/dropoffs the robot cannot stand on)
+        target_is_walkable=True:  seeds from the cell itself (for walkable targets like home)
         """
         distance_map = {}
         search_queue = deque()
 
-        # Seed the BFS from all walkable neighbors of the target cell.
-        # These are the cells the robot can actually stand on to interact.
-        for delta_x, delta_y in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            neighbor_x = start_grid_x + delta_x
-            neighbor_y = start_grid_y + delta_y
+        if target_is_walkable:
+            distance_map[(start_grid_x, start_grid_y)] = 0
+            search_queue.append((start_grid_x, start_grid_y, 0))
+        else:
+            for delta_x, delta_y in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                neighbor_x = start_grid_x + delta_x
+                neighbor_y = start_grid_y + delta_y
+                is_in_bounds = 0 <= neighbor_x < GRID_WIDTH and 0 <= neighbor_y < GRID_HEIGHT
+                is_walkable = (neighbor_x, neighbor_y) not in self.obstacle_positions
+                if is_in_bounds and is_walkable and (neighbor_x, neighbor_y) not in distance_map:
+                    distance_map[(neighbor_x, neighbor_y)] = 0
+                    search_queue.append((neighbor_x, neighbor_y, 0))
 
-            is_in_bounds = 0 <= neighbor_x < GRID_WIDTH and 0 <= neighbor_y < GRID_HEIGHT
-            is_walkable = (neighbor_x, neighbor_y) not in self.obstacle_positions
-
-            if is_in_bounds and is_walkable and (neighbor_x, neighbor_y) not in distance_map:
-                distance_map[(neighbor_x, neighbor_y)] = 0
-                search_queue.append((neighbor_x, neighbor_y, 0))
-
-        # The rest of the BFS loop stays exactly the same
         while search_queue:
             current_x, current_y, current_dist = search_queue.popleft()
-
             for delta_x, delta_y in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                 neighbor_x = current_x + delta_x
                 neighbor_y = current_y + delta_y
-
-                is_in_bounds = (
-                    0 <= neighbor_x < GRID_WIDTH and 0 <= neighbor_y < GRID_HEIGHT
-                )
+                is_in_bounds = 0 <= neighbor_x < GRID_WIDTH and 0 <= neighbor_y < GRID_HEIGHT
                 is_not_obstacle = (neighbor_x, neighbor_y) not in self.obstacle_positions
-
                 if is_in_bounds and is_not_obstacle and (neighbor_x, neighbor_y) not in distance_map:
                     distance_map[(neighbor_x, neighbor_y)] = current_dist + 1
                     search_queue.append((neighbor_x, neighbor_y, current_dist + 1))
 
         return distance_map
 
-    # NORMAL SPAWNING METHOD
-
-    # def _spawn_new_target(self):
-    #     """Clear all shelves and place a box on a new random shelf."""
-    #     for shelf in self.shelves:
-    #         shelf.has_box = False
-    #         shelf.image = shelf.empty_image
-
-    #     new_target_shelf = random.choice(self.shelves)
-    #     new_target_shelf.has_box = True
-    #     new_target_shelf.image = new_target_shelf.loaded_image
-
-    #     self.target_grid_x, self.target_grid_y = self._to_grid_coords(new_target_shelf)
-    #     self.target_distance_map = self._bfs_distance_map(
-    #         self.target_grid_x, self.target_grid_y
-    #     )
-
-
-    # TARGETED SPAWNING METHOD 
     def _spawn_new_target(self):
-        """Clear all shelves and place a box on a shelf in the extreme left/right zones."""
+        """Clears all shelves and places a box on a new random shelf."""
         for shelf in self.shelves:
             shelf.has_box = False
             shelf.image = shelf.empty_image
 
-        # Restrict spawning to the extreme left (col 1–2) and right (col 19–20) shelves
-        # These are the zones where the robot currently underperforms.
-        extreme_zone_shelves = [
-            shelf for shelf in self.shelves
-            # if self._to_grid_coords(shelf)[0] in {1, 2, 19, 20}
+        target_shelf = random.choice(self.shelves)
+        target_shelf.has_box = True
+        target_shelf.image = target_shelf.loaded_image
 
-            if self._to_grid_coords(shelf)[0] in {1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 20}
-            # if self._to_grid_coords(shelf)[0] in {5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-        ]
-
-        # Fall back to all shelves if the filtered list is somehow empty
-        spawn_pool = extreme_zone_shelves if extreme_zone_shelves else self.shelves
-
-        new_target_shelf = random.choice(spawn_pool)
-        new_target_shelf.has_box = True
-        new_target_shelf.image = new_target_shelf.loaded_image
-
-        self.target_grid_x, self.target_grid_y = self._to_grid_coords(new_target_shelf)
+        self.target_grid_x, self.target_grid_y = self._to_grid_coords(target_shelf)
         self.target_distance_map = self._bfs_distance_map(
             self.target_grid_x, self.target_grid_y
         )
@@ -202,22 +150,18 @@ class WarehouseEnv(gym.Env):
 
         self.steps = 0
         self.score = 0
-        self.recent_positions = deque(maxlen=8)  
-        self.last_action = -1 
+        self.recent_positions = deque(maxlen=8)
+        self.last_action = -1
 
-        # Set dropoff grid position using the central platform
         central_platform = self.dropoff_platforms[len(self.dropoff_platforms) // 2]
         self.dropoff_grid_x, self.dropoff_grid_y = self._to_grid_coords(central_platform)
 
-        # Spawn the first target shelf
         self._spawn_new_target()
 
-        # Build the set of all blocked positions (shelves + dropoff platforms)
         blocked_positions = self.obstacle_positions | {
             self._to_grid_coords(platform) for platform in self.dropoff_platforms
         }
 
-        # Build a list of all valid spawn positions on the grid
         all_valid_spawn_positions = [
             (grid_x, grid_y)
             for grid_x in range(GRID_WIDTH)
@@ -225,46 +169,27 @@ class WarehouseEnv(gym.Env):
             if (grid_x, grid_y) not in blocked_positions
         ]
 
-        # Curriculum learning: for early episodes, only consider positions
-        # close to the target shelf so the robot can learn pickup first
-        if self.total_episodes_elapsed < 300:
-            nearby_spawn_positions = [
-                (grid_x, grid_y)
-                for grid_x, grid_y in all_valid_spawn_positions
-                if abs(grid_x - self.target_grid_x) <= 3
-                and abs(grid_y - self.target_grid_y) <= 3
-            ]
-            # Fall back to any valid position if none are nearby (edge case)
-            spawn_pool = nearby_spawn_positions if nearby_spawn_positions else all_valid_spawn_positions
-        else:
-            spawn_pool = all_valid_spawn_positions
-
-        robot_start_x, robot_start_y = random.choice(spawn_pool)
+        robot_start_x, robot_start_y = random.choice(all_valid_spawn_positions)
         self.robot = Robot(start_x=robot_start_x, start_y=robot_start_y)
 
         self.total_episodes_elapsed += 1
 
         return self._get_observation(), {}
 
-
-
     def _get_observation(self):
         robot = self.robot
-        
 
         last_move_x = 0.0
         last_move_y = 0.0
-        if self.last_action == 0:   # Up
+        if self.last_action == 0:
             last_move_y = -1.0
-        elif self.last_action == 1: # Down
+        elif self.last_action == 1:
             last_move_y = 1.0
-        elif self.last_action == 2: # Left
+        elif self.last_action == 2:
             last_move_x = -1.0
-        elif self.last_action == 3: # Right
+        elif self.last_action == 3:
             last_move_x = 1.0
 
-
-        # Determine the current navigation target based on whether robot is loaded
         if robot.loaded:
             nav_target_x, nav_target_y = self.dropoff_grid_x, self.dropoff_grid_y
         else:
@@ -280,43 +205,34 @@ class WarehouseEnv(gym.Env):
             (self.dropoff_grid_y - robot.grid_y) / GRID_HEIGHT,
         ]
 
-        # 8-neighbor occupancy (1.0 = blocked, 0.0 = free)
         for delta_x, delta_y in [(-1, 0), (1, 0), (0, -1), (0, 1),
-                                   (-1, -1), (1, -1), (-1, 1), (1, 1)]:
+                                  (-1, -1), (1, -1), (-1, 1), (1, 1)]:
             neighbor_x = robot.grid_x + delta_x
             neighbor_y = robot.grid_y + delta_y
-
             is_out_of_bounds = not (0 <= neighbor_x < GRID_WIDTH and 0 <= neighbor_y < GRID_HEIGHT)
             is_obstacle = (neighbor_x, neighbor_y) in self.obstacle_positions
-
             observation.append(1.0 if is_obstacle or is_out_of_bounds else 0.0)
 
-
-        # Is the robot currently in a valid position to pick up?
         can_pickup = float(
             not robot.loaded
             and abs(robot.grid_x - self.target_grid_x) + abs(robot.grid_y - self.target_grid_y) == 1
         )
-        # Is the robot currently in a valid position to deliver?
         can_deliver = float(
             robot.loaded
             and abs(robot.grid_x - self.dropoff_grid_x) + abs(robot.grid_y - self.dropoff_grid_y) == 1
         )
 
-        
         observation.append(last_move_x)
         observation.append(last_move_y)
         observation.append(can_pickup)
         observation.append(can_deliver)
 
         return np.array(observation, dtype=np.float32)
-    
-    
+
     def step(self, action):
         self.steps += 1
         robot = self.robot
 
-        # 1. Record distance before taking the action
         active_distance_map = (
             self.dropoff_distance_map if robot.loaded else self.target_distance_map
         )
@@ -325,8 +241,7 @@ class WarehouseEnv(gym.Env):
         current_event = "move"
         earned_proximity_bonus = 0.0
 
-        # 2. Execute the action
-        if action < 4:  # Movement actions: Up, Down, Left, Right
+        if action < 4:
             direction_deltas = [(0, -1), (0, 1), (-1, 0), (1, 0)]
             delta_x, delta_y = direction_deltas[action]
             next_x = robot.grid_x + delta_x
@@ -340,17 +255,12 @@ class WarehouseEnv(gym.Env):
             else:
                 current_event = "collision"
 
-            # Proximity bonus: reward the robot for getting close to the target shelf
             if not robot.loaded:
                 dist_to_target = self.target_distance_map.get((robot.grid_x, robot.grid_y), 50)
                 if dist_to_target <= 2:
                     earned_proximity_bonus = self.reward_manager.proximity_bonus
 
-        elif action == 4:  # Interact action
-            dist_to_target_shelf = (
-                abs(robot.grid_x - self.target_grid_x)
-                + abs(robot.grid_y - self.target_grid_y)
-            )
+        elif action == 4:
             dist_to_dropoff = (
                 abs(robot.grid_x - self.dropoff_grid_x)
                 + abs(robot.grid_y - self.dropoff_grid_y)
@@ -368,15 +278,13 @@ class WarehouseEnv(gym.Env):
                 robot.loaded = False
                 self.score += 1
                 current_event = "delivery"
-                self._spawn_new_target()
+                self._on_delivery()
 
             else:
                 current_event = "failed_interact"
-
         else:
             current_event = "wait"
 
-        # 3. Calculate reward based on event, distance progress, and proximity
         distance_after = active_distance_map.get((robot.grid_x, robot.grid_y), 50)
         reward = self.reward_manager.calculate(
             current_event,
@@ -384,79 +292,87 @@ class WarehouseEnv(gym.Env):
             proximity_bonus=earned_proximity_bonus,
         )
 
-        # 4. Apply revisit penalty to discourage oscillation (movement actions only)
         if action < 4:
             current_position = (robot.grid_x, robot.grid_y)
-            visit_count_in_recent_history = self.recent_positions.count(current_position)
+            # visit_count_in_recent_history = self.recent_positions.count(current_position)
+            # if visit_count_in_recent_history > 2:
+            #     reward -= 4.0
+            # elif visit_count_in_recent_history == 1:
+            #     reward -= 0.3
 
-            if visit_count_in_recent_history > 2:
-                reward -= 4.0  # heavy penalty for visiting same cell more than twice
-            elif visit_count_in_recent_history == 1:
-                reward -= 0.3  # mild penalty for first revisit
+            pos_list = list(self.recent_positions)
+            visit_count = pos_list.count(current_position)
+            is_pingpong = len(pos_list) >= 2 and current_position == pos_list[-2]
+            
+            if is_pingpong and visit_count >= 2:
+                reward -= visit_count * 2.0  # scales: 4.0, 6.0, 8.0 ...
+            elif visit_count >= 2:
+                reward -= visit_count * 0.5  # mild: 1.0, 1.5, 2.0 ...
 
             self.recent_positions.append(current_position)
-            
 
         is_done = self.steps >= 500
         self.last_action = action
-        
+
         return self._get_observation(), reward, is_done, False, {}
 
+    def _on_delivery(self):
+        """
+        Called after every successful delivery.
+        Base behavior: immediately spawn next target.
+        Subclasses override this to inject home-return or queue logic.
+        """
+        self._spawn_new_target()
 
     def heuristic_action(self):
-        """
-        Returns the best action toward the current target using BFS distance.
-        Used during exploration instead of random actions to speed up training.
-        """
         robot = self.robot
-
         active_distance_map = (
             self.dropoff_distance_map if robot.loaded else self.target_distance_map
         )
-
         current_distance = active_distance_map.get((robot.grid_x, robot.grid_y), 50)
-
-        # Check all 4 movement directions and pick the one that reduces distance most
-        direction_deltas = [(0, -1), (0, 1), (-1, 0), (1, 0)]  # Up, Down, Left, Right
+        direction_deltas = [(0, -1), (0, 1), (-1, 0), (1, 0)]
         best_action = None
         best_distance = current_distance
 
         for action_index, (delta_x, delta_y) in enumerate(direction_deltas):
             next_x = robot.grid_x + delta_x
             next_y = robot.grid_y + delta_y
-
             is_in_bounds = 0 <= next_x < GRID_WIDTH and 0 <= next_y < GRID_HEIGHT
             is_passable = (next_x, next_y) not in self.obstacle_positions
-
             if is_in_bounds and is_passable:
-
                 neighbor_distance = active_distance_map.get((next_x, next_y), 50)
                 if neighbor_distance < best_distance:
                     best_distance = neighbor_distance
                     best_action = action_index
 
-        # If adjacent to the target, interact — but only when no better move exists
         if not robot.loaded:
             dist_to_target_shelf = (
                 abs(robot.grid_x - self.target_grid_x)
                 + abs(robot.grid_y - self.target_grid_y)
             )
             if dist_to_target_shelf == 1 and best_action is None:
-                return 4  # Interact
-
+                return 4
         elif robot.loaded:
             dist_to_dropoff = (
                 abs(robot.grid_x - self.dropoff_grid_x)
                 + abs(robot.grid_y - self.dropoff_grid_y)
             )
             if dist_to_dropoff == 1:
-                return 4  # Interact
+                return 4
 
-        # Fall back to a random movement action if no better move found (e.g. trapped)
         if best_action is None:
             return random.randint(0, 3)
 
         return best_action
+    
+
+    def _handle_pygame_events(self):
+        """Process pygame events to keep the window responsive."""
+        for pygame_event in pygame.event.get():
+            if pygame_event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+                
 
     def render(self):
         if self.render_mode is None:
@@ -470,52 +386,34 @@ class WarehouseEnv(gym.Env):
             pygame.display.set_caption("Warehouse Simulation")
             self.clock = pygame.time.Clock()
 
-        for pygame_event in pygame.event.get():
-            if pygame_event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+        self._handle_pygame_events()
 
         self.screen.fill((30, 30, 30))
 
-        # Draw charge stations
         for charge_station in self.charge_stations:
             self.screen.blit(charge_station.image, (charge_station.x, charge_station.y))
 
-        # Draw dropoff platforms
         for dropoff_platform in self.dropoff_platforms:
             self.screen.blit(dropoff_platform.image, (dropoff_platform.x, dropoff_platform.y))
 
-        # Draw shelves with shadow and target highlight
         for shelf in self.shelves:
             shelf_grid_position = self._to_grid_coords(shelf)
             is_current_target = (
                 not self.robot.loaded
                 and shelf_grid_position == (self.target_grid_x, self.target_grid_y)
             )
-
-            # Draw shadow behind the shelf
             self.screen.blit(shelf.shadow_image, (shelf.x - 1, shelf.y + 4))
-
-            # Highlight the target shelf in yellow
             if is_current_target:
                 pygame.draw.rect(
-                    self.screen, (255, 255, 0), (shelf.x - 2, shelf.y - 2, TILE_SIZE + 4, TILE_SIZE + 4), 2
+                    self.screen, (255, 255, 0),
+                    (shelf.x - 2, shelf.y - 2, TILE_SIZE + 4, TILE_SIZE + 4), 2
                 )
-
             self.screen.blit(shelf.image, (shelf.x, shelf.y))
 
-        # Draw the robot using its actual sprite
         robot_pixel_x = PADDING_BORDER + self.robot.grid_x * GRID_SPACING
         robot_pixel_y = PADDING_BORDER + self.robot.grid_y * GRID_SPACING
 
-        # Pick the correct image based on loaded state
-        # Since the RL robot doesn't track direction, we default to vertical facing
-        if self.robot.loaded:
-            robot_image = ROBOT_IMAGE_VERTICAL_BOX
-        else:
-            robot_image = ROBOT_IMAGE_VERTICAL
-
-        # Center the robot sprite on its grid cell
+        robot_image = ROBOT_IMAGE_VERTICAL_BOX if self.robot.loaded else ROBOT_IMAGE_VERTICAL
         center_offset_x = (TILE_SIZE - ROBOT_WIDTH) // 2
         center_offset_y = (TILE_SIZE - ROBOT_HEIGHT) // 2
         self.screen.blit(robot_image, (robot_pixel_x + center_offset_x, robot_pixel_y + center_offset_y))
