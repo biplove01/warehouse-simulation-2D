@@ -69,6 +69,7 @@ class TestingEnv(WarehouseEnv):
         else:
             self._go_home()
 
+
     def _go_home(self):
         """Sends robot back to home station to wait for next click."""
         self.returning_home = True
