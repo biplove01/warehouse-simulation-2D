@@ -46,5 +46,6 @@ def create_map():
 #   box_shelf = random.choice(shelves)
 #   box_shelf.has_box = True
 #   box_shelf.image = box_shelf.loaded_image
+#   This thing returns the shelves, charge_stations, and dropoff_platforms
 
   return shelves, charge_stations, dropoff_platforms
