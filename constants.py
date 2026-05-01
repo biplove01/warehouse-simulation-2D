@@ -47,6 +47,3 @@ ROBOT_CHARGE_STATION_IMAGE = load_img(
     "robot-charging.png", (TILE_SIZE, CHARGE_STATION_HEIGHT))
 DROP_OFF_PLATFORM_IMAGE = load_img(
     "drop-off.png", (TILE_SIZE, CHARGE_STATION_HEIGHT))
-
-
-NEW_CONSTANT = 22
