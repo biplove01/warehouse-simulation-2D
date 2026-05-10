@@ -2,7 +2,7 @@ import torch
 from collections import deque
 from warehouse_env import WarehouseEnv, ROBOT_HOME_GRID_X, ROBOT_HOME_GRID_Y
 from click_controller import ClickController
-from trainer import QNetwork
+from train import QNetwork
 from constants import *
 
 compute_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

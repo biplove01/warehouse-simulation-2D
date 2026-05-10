@@ -9,6 +9,8 @@ from robot import Robot
 import pygame
 import sys
 
+from pygame_manager import ensure_init
+
 
 class RewardManager:
     """Centralized reward shaping logic to keep the environment clean."""
@@ -24,6 +26,8 @@ class RewardManager:
         self.pickup_bonus = 10.0
         self.delivery_bonus = 20.0
         self.proximity_bonus = 0.5
+
+
 
     def calculate(self, event, distance_delta=0, proximity_bonus=0.0):
         if event == "collision":
@@ -57,6 +61,20 @@ class WarehouseEnv(gym.Env):
         self.screen = None
         self.clock = None
         self.reward_manager = RewardManager()
+
+        if render_mode == "human":
+            import pygame
+            if pygame.get_init():
+                self.screen = pygame.display.get_surface()  # grab existing window
+                self.clock = pygame.time.Clock()
+            else:
+                pygame.init()
+                window_width = GRID_WIDTH * GRID_SPACING + (2 * PADDING_BORDER)
+                window_height = GRID_HEIGHT * GRID_SPACING + (2 * PADDING_BORDER)
+                self.screen = pygame.display.set_mode((window_width, window_height))
+                self.clock = pygame.time.Clock()
+        else:
+            self.screen = None
 
         self.shelves, self.charge_stations, self.dropoff_platforms = create_map()
 
@@ -386,15 +404,13 @@ class WarehouseEnv(gym.Env):
             return
 
         if self.screen is None:
-            pygame.init()
             window_width = GRID_WIDTH * GRID_SPACING + (2 * PADDING_BORDER)
             window_height = GRID_HEIGHT * GRID_SPACING + (2 * PADDING_BORDER)
-            self.screen = pygame.display.set_mode((window_width, window_height))
-            pygame.display.set_caption("Warehouse Simulation")
+            self.screen = ensure_init(window_width, window_height, "Warehouse")
             self.clock = pygame.time.Clock()
 
-        self._handle_pygame_events()
 
+        self._handle_pygame_events()
         self.screen.fill((30, 30, 30))
 
         for charge_station in self.charge_stations:
