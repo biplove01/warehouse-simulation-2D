@@ -130,6 +130,17 @@ class WarehouseEnv(gym.Env):
 
         return distance_map
 
+
+    def _clear_target_shelf(self):
+        """Remove the box from the shelf that is currently the target."""
+        for shelf in self.shelves:
+            shelf_grid = self._to_grid_coords(shelf)
+            if shelf_grid == (self.target_grid_x, self.target_grid_y):
+                shelf.has_box = False
+                shelf.image = shelf.empty_image
+                break
+
+
     def _spawn_new_target(self):
         """Clears all shelves and places a box on a new random shelf."""
         for shelf in self.shelves:
@@ -273,6 +284,7 @@ class WarehouseEnv(gym.Env):
             if not robot.loaded and is_directly_adjacent_to_target:
                 robot.loaded = True
                 current_event = "pickup"
+                self._clear_target_shelf()
 
             elif robot.loaded and dist_to_dropoff == 1:
                 robot.loaded = False
@@ -294,11 +306,6 @@ class WarehouseEnv(gym.Env):
 
         if action < 4:
             current_position = (robot.grid_x, robot.grid_y)
-            # visit_count_in_recent_history = self.recent_positions.count(current_position)
-            # if visit_count_in_recent_history > 2:
-            #     reward -= 4.0
-            # elif visit_count_in_recent_history == 1:
-            #     reward -= 0.3
 
             pos_list = list(self.recent_positions)
             visit_count = pos_list.count(current_position)

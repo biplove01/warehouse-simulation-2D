@@ -3,4 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="warehouse_env" />
   </component>
+  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.14 (warehouse-simulation-2D)" project-jdk-type="Python SDK" />
 </project>

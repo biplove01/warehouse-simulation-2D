@@ -10,7 +10,13 @@ from constants import *
 
 from warehouse_env import WarehouseEnv, ROBOT_HOME_GRID_X, ROBOT_HOME_GRID_Y
 
-compute_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if torch.cuda.is_available():
+    compute_device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    compute_device = torch.device("mps")
+else:
+    compute_device = torch.device("cpu")
+
 print(f"Training on: {compute_device}")
 
 RENDER_DURING_TRAINING = False

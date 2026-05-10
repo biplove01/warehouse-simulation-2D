@@ -9,78 +9,99 @@ compute_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # ─── TESTING ENVIRONMENT ─────────────────────────────────────────────────────
-
 class TestingEnv(WarehouseEnv):
     """
-    Extends WarehouseEnv with testing-specific behavior:
-    - Target queue filled by mouse clicks
-    - No random spawning — only user-specified targets
-    - Robot returns home and waits when queue is empty
+    Testing environment with click‑based target queue.
+    - No automatic target spawning on reset.
+    - No episode termination (infinite horizon).
+    - Boxes appear on shelves immediately when clicked.
     """
-
-    def reset(self, seed=None, options=None):
-        # Preserve the queue across episode resets so clicks aren't lost
-        preserved_queue = self.target_queue if hasattr(self, "target_queue") else deque()
-        observation, info = super().reset(seed=seed, options=options)
-        self.target_queue = preserved_queue
-        self.returning_home = True  # always start by going home
-        self.target_grid_x = ROBOT_HOME_GRID_X
-        self.target_grid_y = ROBOT_HOME_GRID_Y
-        self.target_distance_map = self.home_distance_map
-        return observation, info
 
     def __init__(self, render_mode=None):
         super().__init__(render_mode=render_mode)
         self.target_queue = deque()
         self.returning_home = True
 
-    def enqueue_target(self, grid_x, grid_y):
-        """Called by ClickController when user clicks a shelf."""
-        self.target_queue.append((grid_x, grid_y))
-        print(f"  📦 Shelf ({grid_x}, {grid_y}) added to queue. Queue size: {len(self.target_queue)}")
+    def reset(self, seed=None, options=None):
+        # Preserve the queue across resets (though we may never reset in testing)
+        preserved_queue = self.target_queue.copy() if hasattr(self, "target_queue") else deque()
 
-    def _spawn_new_target(self):
-        """
-        Pops next target from queue.
-        If queue is empty, sends robot home to wait for clicks.
-        No random spawning in testing mode.
-        """
+        # Clear all shelf boxes
         for shelf in self.shelves:
             shelf.has_box = False
             shelf.image = shelf.empty_image
 
+        # Call parent reset but we will override its automatic spawning
+        # First, temporarily disable _spawn_new_target by monkey-patching?
+        # Simpler: call the base method but then immediately clear any
+        # accidentally spawned target and set returning_home=True.
+        obs, info = super().reset(seed=seed, options=options)
+
+        # Undo any random target that WarehouseEnv.reset may have created
+        for shelf in self.shelves:
+            shelf.has_box = False
+            shelf.image = shelf.empty_image
+
+        self.target_queue = preserved_queue
+        self.returning_home = True
+        self.consecutive_wait_steps_at_home = 0   # if needed
+
+        # Restore boxes for all queued shelves
+        for (gx, gy) in self.target_queue:
+            for shelf in self.shelves:
+                if self._to_grid_coords(shelf) == (gx, gy):
+                    shelf.has_box = True
+                    shelf.image = shelf.loaded_image
+                    break
+
+        # Set navigation target to home
+        self.target_grid_x = ROBOT_HOME_GRID_X
+        self.target_grid_y = ROBOT_HOME_GRID_Y
+        self.target_distance_map = self.home_distance_map
+
+        return obs, info
+
+    def enqueue_target(self, grid_x, grid_y):
+        """Called by ClickController when a shelf is clicked."""
+        if (grid_x, grid_y) in self.target_queue:
+            print(f"  ⚠️ Shelf ({grid_x}, {grid_y}) already in queue, ignored.")
+            return
+
+        # Place box on shelf immediately
+        for shelf in self.shelves:
+            if self._to_grid_coords(shelf) == (grid_x, grid_y):
+                shelf.has_box = True
+                shelf.image = shelf.loaded_image
+                break
+
+        self.target_queue.append((grid_x, grid_y))
+        print(f"  📦 Box placed on shelf ({grid_x}, {grid_y}). Queue size: {len(self.target_queue)}")
+
+    def _advance_to_next_target(self):
+        """Pop next target from queue and set as active navigation target."""
         if self.target_queue:
-            next_target_grid_x, next_target_grid_y = self.target_queue.popleft()
-            target_shelf = next(
-                (s for s in self.shelves
-                 if self._to_grid_coords(s) == (next_target_grid_x, next_target_grid_y)),
-                None
-            )
-            if target_shelf is None:
-                self._go_home()
-                return
-            target_shelf.has_box = True
-            target_shelf.image = target_shelf.loaded_image
-            self.target_grid_x, self.target_grid_y = self._to_grid_coords(target_shelf)
-            self.target_distance_map = self._bfs_distance_map(
-                self.target_grid_x, self.target_grid_y
-            )
+            next_x, next_y = self.target_queue.popleft()
+            self.target_grid_x, self.target_grid_y = next_x, next_y
+            self.target_distance_map = self._bfs_distance_map(next_x, next_y)
             self.returning_home = False
+            print(f"  ➡️ Now targeting shelf ({next_x}, {next_y})")
         else:
             self._go_home()
 
-
     def _go_home(self):
-        """Sends robot back to home station to wait for next click."""
         self.returning_home = True
         self.target_grid_x = ROBOT_HOME_GRID_X
         self.target_grid_y = ROBOT_HOME_GRID_Y
         self.target_distance_map = self.home_distance_map
-        print("  🏠 Queue empty, robot returning to home station.")
+        print("  🏠 Queue empty, robot returning home.")
 
     def _on_delivery(self):
-        """After delivery, pop next target from queue or go home."""
-        self._spawn_new_target()
+        """After delivery, move to next target (or home). Box already cleared on pickup."""
+        self._advance_to_next_target()
+
+    def _spawn_new_target(self):
+        """Override to do nothing – never spawn random targets in testing."""
+        pass
 
     def step(self, action):
         robot = self.robot
@@ -88,46 +109,50 @@ class TestingEnv(WarehouseEnv):
         # ── HOME WAIT PHASE ───────────────────────────────────────────────────
         if self.returning_home:
             self.steps += 1
-            robot_at_home = (
-                robot.grid_x == ROBOT_HOME_GRID_X and
-                robot.grid_y == ROBOT_HOME_GRID_Y
-            )
+            robot_at_home = (robot.grid_x == ROBOT_HOME_GRID_X and
+                             robot.grid_y == ROBOT_HOME_GRID_Y)
 
             if robot_at_home:
-                # Check if a new target has been queued while waiting
                 if self.target_queue:
-                    self._spawn_new_target()
-                # Stay idle at home — force wait action regardless of policy
-                reward = 0.0
+                    # There are pending targets – stop waiting and go to the next one
+                    self._advance_to_next_target()
+                    # After advancing, return a neutral observation and reward.
+                    return self._get_observation(), 0.0, False, False, {}
+                else:
+                    # No targets – reward waiting, penalise non‑wait actions
+                    if action == 5:
+                        reward = 0.5
+                    else:
+                        reward = -0.5
+                    # No episode termination
+                    return self._get_observation(), reward, False, False, {}
             else:
-                # Navigate home using BFS
-                distance_before = self.home_distance_map.get((robot.grid_x, robot.grid_y), 50)
+                # Not home yet – navigate home
+                dist_before = self.home_distance_map.get((robot.grid_x, robot.grid_y), 50)
                 if action < 4:
-                    direction_deltas = [(0, -1), (0, 1), (-1, 0), (1, 0)]
-                    delta_x, delta_y = direction_deltas[action]
-                    next_x = robot.grid_x + delta_x
-                    next_y = robot.grid_y + delta_y
-                    is_in_bounds = 0 <= next_x < GRID_WIDTH and 0 <= next_y < GRID_HEIGHT
-                    is_passable = (next_x, next_y) not in self.obstacle_positions
-                    if is_in_bounds and is_passable:
-                        robot.grid_x, robot.grid_y = next_x, next_y
-                    distance_after = self.home_distance_map.get((robot.grid_x, robot.grid_y), 50)
-                    reward = (distance_before - distance_after) * self.reward_manager.progress_reward_scale
+                    dx, dy = [(0, -1), (0, 1), (-1, 0), (1, 0)][action]
+                    nx, ny = robot.grid_x + dx, robot.grid_y + dy
+                    if (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT and
+                        (nx, ny) not in self.obstacle_positions):
+                        robot.grid_x, robot.grid_y = nx, ny
+                        dist_after = self.home_distance_map.get((robot.grid_x, robot.grid_y), 50)
+                        reward = (dist_before - dist_after) * self.reward_manager.progress_reward_scale
+                    else:
+                        reward = self.reward_manager.collision_penalty
                 else:
                     reward = self.reward_manager.step_penalty
 
-            is_done = self.steps >= 500
-            self.last_action = action
-            return self._get_observation(), reward, is_done, False, {}
+                return self._get_observation(), reward, False, False, {}
 
-        # ── NORMAL STEP ───────────────────────────────────────────────────────
-        return super().step(action)
+        # ── NORMAL STEP (robot has an active target shelf) ─────────────────────
+        # Use parent step but override termination to always False
+        obs, reward, _, _, info = super().step(action)
+        # Never terminate
+        return obs, reward, False, False, info
 
 
 # ─── TEST FUNCTION ───────────────────────────────────────────────────────────
-
 def test_policy(model_path="checkpoints/best_model.pt", render=True):
-
     env = TestingEnv(render_mode="human" if render else None)
     click_controller = ClickController(env)
 
@@ -145,22 +170,20 @@ def test_policy(model_path="checkpoints/best_model.pt", render=True):
         print(f"Error: {model_path} not found. Train the robot first!")
         return
 
+    # Initial reset – no random target, robot starts at home
+    current_state, _ = env.reset()
     if render:
-        env.reset()
         env.render()
+
+    # Action name mapping for display
+    action_names = ["Up", "Down", "Left", "Right", "Interact", "Wait"]
 
     print("\n🖱️  Click on shelves to queue targets. Robot will deliver them in order.")
     print("    Close the window to stop.\n")
 
-    episode = 0
-    while True:
-        current_state, _ = env.reset()
-        is_done = False
-        step_count = 0
-        episode += 1
-        print(f"\n--- Episode {episode} Starting ---")
-
-        while not is_done:
+    step_count = 0
+    try:
+        while True:
             if render:
                 click_controller.handle_pygame_events()
 
@@ -168,31 +191,26 @@ def test_policy(model_path="checkpoints/best_model.pt", render=True):
                 state_tensor = torch.as_tensor(
                     current_state, dtype=torch.float32, device=compute_device
                 ).unsqueeze(0)
-                chosen_action = policy_network(state_tensor).argmax().item()
+                action = policy_network(state_tensor).argmax().item()
 
-            current_state, reward, terminated, truncated, _ = env.step(chosen_action)
-            is_done = terminated or truncated
+            current_state, reward, done, truncated, _ = env.step(action)
             step_count += 1
 
-            action_names = ["Up", "Down", "Left", "Right", "Interact", "Wait"]
-            print(
-                f"  Step {step_count:3d} | "
-                f"Action: {action_names[chosen_action]:8s} | "
-                f"Reward: {reward:6.2f} | "
-                f"Loaded: {env.robot.loaded} | "
-                f"Pos: ({env.robot.grid_x}, {env.robot.grid_y}) | "
-                f"Score: {env.score} | "
-                f"Queue: {len(env.target_queue)}"
-            )
+            # Only print occasionally to avoid spam – or always if you like
+            if step_count % 10 == 0:
+                print(f"Step {step_count:5d} | Action: {action_names[action]:8s} | "
+                      f"Reward: {reward:6.2f} | Loaded: {env.robot.loaded} | "
+                      f"Pos: ({env.robot.grid_x}, {env.robot.grid_y}) | "
+                      f"Queue: {len(env.target_queue)}")
 
             if render:
                 env.render()
-
-        print(
-            f"Episode Finished | "
-            f"Deliveries: {env.score} | "
-            f"Steps: {step_count}"
-        )
+    except KeyboardInterrupt:
+        print("\n\nTest ended by user.")
+    except Exception as e:
+        print(f"\nError: {e}")
+    finally:
+        pygame.quit()
 
 
 if __name__ == "__main__":
