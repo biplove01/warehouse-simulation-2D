@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -70,9 +72,11 @@ class SharedTargetQueue:
         self._pending_targets: deque[tuple[int, int]] = deque()
 
     def reset(self):
-        """Clear all state and seed the queue with one fresh target."""
+
         self._assigned_targets.clear()
         self._pending_targets.clear()
+        # Seed with 2 targets so both robots get one immediately
+        self._enqueue_new_target()
         self._enqueue_new_target()
 
     def request_target(self, robot_id: int):
@@ -93,12 +97,10 @@ class SharedTargetQueue:
         return target_position, distance_map
 
     def release_assignment(self, robot_id: int):
-        """
-        Robot signals delivery complete. Frees its slot and immediately
-        queues a fresh target so the other robot can claim it if free.
-        """
+
         self._assigned_targets.pop(robot_id, None)
-        self._enqueue_new_target()
+        while len(self._pending_targets) < 2:
+            self._enqueue_new_target()
 
     def _currently_claimed_positions(self) -> set:
         claimed = set(self._assigned_targets.values())
@@ -120,7 +122,7 @@ class SharedTargetQueue:
         self._pending_targets.append(self._shelf_grid_pos(chosen_shelf))
 
     @staticmethod
-    def _shelf_grid_pos(shelf) -> tuple:
+    def _shelf_grid_pos(shelf) -> tuple[int, int]:
         grid_x = round((shelf.x - PADDING_BORDER) / GRID_SPACING)
         grid_y = round((shelf.y - PADDING_BORDER) / GRID_SPACING)
         return grid_x, grid_y
@@ -220,6 +222,8 @@ class Agent2TrainingEnv(TrainingEnv):
         self.agent1_grid_y = ROBOT_HOME_GRID_Y
         self.agent1_loaded = False
         self.agent1_returning_home = True
+        self.agent1_target_x = ROBOT_HOME_GRID_X
+        self.agent1_target_y = ROBOT_HOME_GRID_Y
 
     # ── observation ───────────────────────────────────────────────────────────
 
@@ -784,6 +788,8 @@ class TwoAgentWarehouseEnv:
             agent1_grid_y=self.agent1_env.robot.grid_y,
             agent1_loaded=self.agent1_env.robot.loaded,
             agent1_returning_home=self.agent1_env.returning_home,
+            agent1_target_x=self.agent1_env.target_grid_x,  # shelf, dropoff, or home
+            agent1_target_y=self.agent1_env.target_grid_y,
         )
 
     # ── render ────────────────────────────────────────────────────────────────

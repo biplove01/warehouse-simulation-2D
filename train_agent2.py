@@ -23,7 +23,7 @@ else:
 
 print(f"Training on: {compute_device}")
 
-
+ 
 # ─── TRAINING FLAGS ───────────────────────────────────────────────────────────
 
 RENDER_DURING_TRAINING = False

@@ -22,7 +22,7 @@ print(f"Training on: {compute_device}")
 RENDER_DURING_TRAINING = False
 RENDER_EVERY_N_EPISODES = 1
 
-HOME_WAIT_STEPS_REQUIRED = 4  # consecutive wait steps before next target spawns
+HOME_WAIT_STEPS_REQUIRED = 1  # consecutive wait steps before next target spawns
 
 render_mode = "human" if RENDER_DURING_TRAINING else None
 
