@@ -7,11 +7,9 @@ from collections import deque
 import os
 import pickle
 from constants import *
-import pygame
 
 from two_agent_warehouse_env import TwoAgentWarehouseEnv
-from model import QNetwork
-from pygame_manager import ensure_init
+from train import QNetwork   # reuse the exact same architecture — no changes
 
 
 if torch.cuda.is_available():
@@ -23,34 +21,34 @@ else:
 
 print(f"Training on: {compute_device}")
 
- 
+
 # ─── TRAINING FLAGS ───────────────────────────────────────────────────────────
 
 RENDER_DURING_TRAINING = False
 RENDER_EVERY_N_EPISODES = 1
 
-# Agent 1's frozen checkpoint — this is never modified.
-AGENT1_MODEL_PATH = "checkpoints/best_model.pt"
+# Agent 1 uses a Q-table trained by DualQAgent — never modified during this run.
+AGENT1_QTABLE_FOLDER = "training_data"
+AGENT1_QTABLE_FILE   = "warehouse_data.pkl"
 
 # Agent 2's checkpoints are saved here, separate from Agent 1's.
 AGENT2_CHECKPOINT_DIR = "checkpoints_agent2"
 
 
 # ─── TRAINING FUNCTION ────────────────────────────────────────────────────────
-pygame.init()
+
 def train():
-
     render_mode = "human" if RENDER_DURING_TRAINING else None
-    if render_mode == "human":
-        pygame.init()
-        window_width = GRID_WIDTH * GRID_SPACING + (2 * PADDING_BORDER)
-        window_height = GRID_HEIGHT * GRID_SPACING + (2 * PADDING_BORDER)
-        ensure_init(window_width, window_height, "Warehouse Training")  # ← first thing
-
 
     # ── Environment ───────────────────────────────────────────────────────────
+    # TwoAgentWarehouseEnv internally:
+    #   • loads Agent 1's Q-table from AGENT1_QTABLE_FOLDER/AGENT1_QTABLE_FILE
+    #   • wraps it in QTablePolicy for deterministic (epsilon=0) action selection
+    #   • runs Agent 1's TrainingEnv as a silent, deterministic moving obstacle
+    #   • exposes Agent 2's Agent2TrainingEnv (obs_size=23) as the training surface
     env = TwoAgentWarehouseEnv(
-        agent1_model_path=AGENT1_MODEL_PATH,
+        agent1_qtable_path=AGENT1_QTABLE_FILE,
+        agent1_qtable_folder=AGENT1_QTABLE_FOLDER,
         compute_device=compute_device,
         render_mode=render_mode,
     )
@@ -75,7 +73,7 @@ def train():
     # Kept identical to train.py so the training dynamics are comparable.
     batch_size = 128
     discount_factor = 0.98
-    epsilon = 1
+    epsilon = 0.7
     epsilon_min = 0.1
     epsilon_decay = 0.998
     target_network_update_frequency = 10
