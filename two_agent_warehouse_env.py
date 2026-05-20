@@ -160,25 +160,31 @@ YIELDING_BONUS_PROXIMITY_THRESHOLD = 2
 
 class Agent2TrainingEnv(TrainingEnv):
     """
-    Extends TrainingEnv for Agent 2. Adds 4 extra observation features
-    describing Agent 1's current state so Agent 2 can anticipate it.
+    Extends TrainingEnv for Agent 2. Adds 6 extra observation features
+    describing Agent 1's CURRENT position AND its NEXT position so Agent 2
+    can see where Agent 1 is heading and vacate proactively.
 
     Extra observation appended (in order):
-        agent1_relative_x   : (agent1.grid_x - agent2.grid_x) / GRID_WIDTH
-        agent1_relative_y   : (agent1.grid_y - agent2.grid_y) / GRID_HEIGHT
-        agent1_loaded       : float(agent1 is carrying a box)
-        agent1_returning_home : float(agent1 is in home-return phase)
+        [19] agent1_relative_x      : (agent1.grid_x - agent2.grid_x) / GRID_WIDTH
+        [20] agent1_relative_y      : (agent1.grid_y - agent2.grid_y) / GRID_HEIGHT
+        [21] agent1_loaded          : float(agent1 is carrying a box)
+        [22] agent1_returning_home  : float(agent1 is in home-return phase)
+        [23] agent1_next_relative_x : (agent1_next_x - agent2.grid_x) / GRID_WIDTH
+        [24] agent1_next_relative_y : (agent1_next_y - agent2.grid_y) / GRID_HEIGHT
+
+    Features [23,24] are the critical ones: they tell Agent 2 WHERE Agent 1
+    will be NEXT step — computed from Agent 1's action before either agent
+    moves. This lets Agent 2 vacate a cell before Agent 1 arrives rather than
+    being forced out after the fact.
     """
 
     # Base observation size from WarehouseEnv: 7 + 8 + 2 + 2 = 19
-    AGENT1_EXTRA_FEATURES = 4
-    EXTENDED_OBSERVATION_SIZE = 19 + AGENT1_EXTRA_FEATURES  # = 23
+    AGENT1_EXTRA_FEATURES = 6
+    EXTENDED_OBSERVATION_SIZE = 19 + AGENT1_EXTRA_FEATURES  # = 25
 
     def __init__(self, render_mode=None):
         super().__init__(render_mode=render_mode)
 
-        # Override observation space to the extended size.
-        import gymnasium as gym
         from gymnasium import spaces
         self.observation_size = self.EXTENDED_OBSERVATION_SIZE
         self.observation_space = spaces.Box(
@@ -187,32 +193,35 @@ class Agent2TrainingEnv(TrainingEnv):
             dtype=np.float32,
         )
 
-        # Agent 1 state — injected externally by TwoAgentWarehouseEnv.
-        # These are set before every call to _get_observation() / step().
+        # Agent 1 current state — injected before every step.
         self.agent1_grid_x = ROBOT_HOME_GRID_X
         self.agent1_grid_y = ROBOT_HOME_GRID_Y
         self.agent1_loaded = False
         self.agent1_returning_home = True
+        # Agent 1 NEXT position — where it will land this step.
+        # Computed from Agent 1's action BEFORE either agent moves.
+        self.agent1_next_grid_x = ROBOT_HOME_GRID_X
+        self.agent1_next_grid_y = ROBOT_HOME_GRID_Y
 
     # ── observation ──────────────────────────────────────────────────────────
 
     def _get_observation(self):
-        """Base 19-feature observation extended with 4 Agent 1 features."""
+        """Base 19-feature observation extended with 6 Agent 1 features."""
         base_observation = super()._get_observation()   # np.float32 array, len 19
 
         agent2_robot = self.robot
-        agent1_relative_x = (
-            (self.agent1_grid_x - agent2_robot.grid_x) / GRID_WIDTH
-        )
-        agent1_relative_y = (
-            (self.agent1_grid_y - agent2_robot.grid_y) / GRID_HEIGHT
-        )
+        agent1_relative_x = (self.agent1_grid_x - agent2_robot.grid_x) / GRID_WIDTH
+        agent1_relative_y = (self.agent1_grid_y - agent2_robot.grid_y) / GRID_HEIGHT
+        agent1_next_relative_x = (self.agent1_next_grid_x - agent2_robot.grid_x) / GRID_WIDTH
+        agent1_next_relative_y = (self.agent1_next_grid_y - agent2_robot.grid_y) / GRID_HEIGHT
 
         extra_features = np.array([
             agent1_relative_x,
             agent1_relative_y,
             float(self.agent1_loaded),
             float(self.agent1_returning_home),
+            agent1_next_relative_x,
+            agent1_next_relative_y,
         ], dtype=np.float32)
 
         return np.concatenate([base_observation, extra_features])
@@ -220,15 +229,19 @@ class Agent2TrainingEnv(TrainingEnv):
     # ── internal helper ───────────────────────────────────────────────────────
 
     def update_agent1_state(self, agent1_grid_x, agent1_grid_y,
-                            agent1_loaded, agent1_returning_home):
+                            agent1_loaded, agent1_returning_home,
+                            agent1_next_grid_x, agent1_next_grid_y):
         """
-        Called by TwoAgentWarehouseEnv before each step so Agent 2's
-        observation always reflects Agent 1's current position/status.
+        Called by TwoAgentWarehouseEnv after Agent 1's action is selected
+        but BEFORE either agent steps. agent1_next_grid_x/y is Agent 1's
+        predicted landing cell — the look-ahead that enables proactive vacating.
         """
         self.agent1_grid_x = agent1_grid_x
         self.agent1_grid_y = agent1_grid_y
         self.agent1_loaded = agent1_loaded
         self.agent1_returning_home = agent1_returning_home
+        self.agent1_next_grid_x = agent1_next_grid_x
+        self.agent1_next_grid_y = agent1_next_grid_y
 
 
 # ─── TWO-AGENT WAREHOUSE ENVIRONMENT ─────────────────────────────────────────
@@ -327,7 +340,21 @@ class TwoAgentWarehouseEnv:
         self.agent1_policy.current_shelf_target_y = self.agent1_env.target_grid_y
 
         # Sync Agent 1's state into Agent 2's observation.
-        self._sync_agent1_state_into_agent2_env()
+        # Compute Agent 1's first action preview so the initial observation
+        # already has a valid look-ahead instead of the default home coords.
+        agent1_first_action = self.agent1_policy.select_action(
+            self._agent1_current_observation
+        )
+        agent1_first_next_x, agent1_first_next_y = self._predict_next_position(
+            self.agent1_env.robot.grid_x,
+            self.agent1_env.robot.grid_y,
+            agent1_first_action,
+            self.agent1_env.obstacle_positions,
+        )
+        self._sync_agent1_state_into_agent2_env(
+            agent1_next_x=agent1_first_next_x,
+            agent1_next_y=agent1_first_next_y,
+        )
         agent2_obs = self.agent2_env._get_observation()
 
         return agent2_obs, agent2_info
@@ -378,9 +405,24 @@ class TwoAgentWarehouseEnv:
             )
         )
 
-        agent2_would_collide_with_agent1 = (
+        # Condition A: Agent 2 moves INTO Agent 1's next cell.
+        agent2_moves_into_agent1_next_cell = (
             agent2_predicted_next_x == agent1_predicted_next_x and
             agent2_predicted_next_y == agent1_predicted_next_y
+        )
+
+        # Condition B: Agent 1 moves INTO Agent 2's CURRENT cell.
+        # Agent 1 is deterministic and ignores Agent 2 — it will walk straight
+        # through. Agent 2 must learn to vacate before this happens.
+        # We detect this here and force Agent 2 to move away.
+        agent1_moves_into_agent2_current_cell = (
+            agent1_predicted_next_x == agent2_robot.grid_x and
+            agent1_predicted_next_y == agent2_robot.grid_y
+        )
+
+        agent2_would_collide_with_agent1 = (
+            agent2_moves_into_agent1_next_cell or
+            agent1_moves_into_agent2_current_cell
         )
 
         # ── 4. Step Agent 1 freely ────────────────────────────────────────────
@@ -415,8 +457,18 @@ class TwoAgentWarehouseEnv:
         # Agent 2 in place. The collision penalty is added on top below.
         #
         effective_agent2_action = agent2_action
-        if agent2_would_collide_with_agent1 and agent2_action < 4:
-            effective_agent2_action = 5   # force wait — stays in place
+        if agent2_would_collide_with_agent1:
+            if agent1_moves_into_agent2_current_cell and agent2_action < 4:
+                # Agent 1 is walking into Agent 2's cell. Agent 2 must MOVE —
+                # not wait. Waiting keeps it in place and the collision still
+                # happens. We keep Agent 2's intended movement action so it
+                # tries to step away; if the move itself is invalid (wall),
+                # the base step will block it and apply a wall-collision penalty
+                # on top of our evacuation penalty below.
+                effective_agent2_action = agent2_action
+            elif agent2_moves_into_agent1_next_cell and agent2_action < 4:
+                # Agent 2 is walking into Agent 1's next cell — force wait.
+                effective_agent2_action = 5
             self.agent2_collision_count += 1
 
         (
@@ -439,8 +491,23 @@ class TwoAgentWarehouseEnv:
 
         total_agent2_reward = agent2_base_reward + collision_and_proximity_reward
 
-        # ── 7. Sync Agent 1 state into Agent 2's env for next obs ────────────
-        self._sync_agent1_state_into_agent2_env()
+        # ── 7. Sync Agent 1 state (with next-step look-ahead) for next obs ─────
+        # After both agents have moved, Agent 1's NEW current position becomes
+        # the current position for the next step, and we re-predict Agent 1's
+        # next action now so Agent 2's observation has fresh look-ahead.
+        agent1_next_action_preview = self.agent1_policy.select_action(
+            self._agent1_current_observation
+        )
+        agent1_preview_next_x, agent1_preview_next_y = self._predict_next_position(
+            self.agent1_env.robot.grid_x,
+            self.agent1_env.robot.grid_y,
+            agent1_next_action_preview,
+            self.agent1_env.obstacle_positions,
+        )
+        self._sync_agent1_state_into_agent2_env(
+            agent1_next_x=agent1_preview_next_x,
+            agent1_next_y=agent1_preview_next_y,
+        )
         agent2_next_obs = self.agent2_env._get_observation()
 
         self.score = self.agent2_env.score
@@ -466,8 +533,11 @@ class TwoAgentWarehouseEnv:
         """
         extra_reward = 0.0
 
-        # ── Collision penalty ─────────────────────────────────────────────────
-        # Agent 2 tried to move into Agent 1's cell.
+        # ── Collision / evacuation penalty ───────────────────────────────────
+        # Fires in two cases:
+        #   A) Agent 2 tried to move into Agent 1's next cell (blocked → wait).
+        #   B) Agent 1 is walking into Agent 2's current cell (evacuation needed).
+        # Both are penalised equally — Agent 2 should have moved away earlier.
         if agent2_action_was_blocked:
             extra_reward += AGENT_COLLISION_PENALTY
             return extra_reward   # no need to evaluate proximity on top
@@ -529,16 +599,21 @@ class TwoAgentWarehouseEnv:
 
         return current_grid_x, current_grid_y
 
-    def _sync_agent1_state_into_agent2_env(self):
+    def _sync_agent1_state_into_agent2_env(self,
+                                           agent1_next_x: int,
+                                           agent1_next_y: int):
         """
-        Pushes Agent 1's current grid position and status flags into
-        Agent 2's environment so they appear in the next observation.
+        Pushes Agent 1's current position, status, AND predicted next position
+        into Agent 2's environment so the observation includes the look-ahead.
+        Call this AFTER Agent 1's action is known but BEFORE Agent 2 acts.
         """
         self.agent2_env.update_agent1_state(
             agent1_grid_x=self.agent1_env.robot.grid_x,
             agent1_grid_y=self.agent1_env.robot.grid_y,
             agent1_loaded=self.agent1_env.robot.loaded,
             agent1_returning_home=self.agent1_env.returning_home,
+            agent1_next_grid_x=agent1_next_x,
+            agent1_next_grid_y=agent1_next_y,
         )
 
     # ── render ────────────────────────────────────────────────────────────────
