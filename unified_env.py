@@ -159,6 +159,11 @@ class TwoAgentWarehouseEnv(gym.Env):
         self.a1_policy = QTablePolicy()
         self.queue = deque()
 
+        self.robot1_orientation = "vertical"
+        self.robot1_facing_right = True
+        self.robot2_orientation = "vertical"
+        self.robot2_facing_right = True
+
     def _gc(self, obj):
         return (round((obj.x - PADDING_BORDER) / GRID_SPACING),
                 round((obj.y - PADDING_BORDER) / GRID_SPACING))
@@ -361,9 +366,9 @@ class TwoAgentWarehouseEnv(gym.Env):
                 action_mask[action_index] = 0.0
 
         is_adjacent_to_pickup = (
-                    abs(self.robot2.grid_x - self._r2_target_gx) + abs(self.robot2.grid_y - self._r2_target_gy) == 1)
+                abs(self.robot2.grid_x - self._r2_target_gx) + abs(self.robot2.grid_y - self._r2_target_gy) == 1)
         is_adjacent_to_dropoff = (
-                    abs(self.robot2.grid_x - self.r2_dropoff_gx) + abs(self.robot2.grid_y - self.r2_dropoff_gy) == 1)
+                abs(self.robot2.grid_x - self.r2_dropoff_gx) + abs(self.robot2.grid_y - self.r2_dropoff_gy) == 1)
 
         is_valid_pickup = (not self.robot2.loaded and self._r2_phase == PHASE_FETCHING and is_adjacent_to_pickup)
         is_valid_delivery = (self.robot2.loaded and self._r2_phase == PHASE_DELIVERING and is_adjacent_to_dropoff)
@@ -385,7 +390,29 @@ class TwoAgentWarehouseEnv(gym.Env):
         self._dispatch()
 
         a1 = self._r1_action()
+
+        # Track visual orientation for R1
+        if a1 == 0 or a1 == 1:
+            self.robot1_orientation = "vertical"
+        elif a1 == 2:
+            self.robot1_orientation = "side"
+            self.robot1_facing_right = False
+        elif a1 == 3:
+            self.robot1_orientation = "side"
+            self.robot1_facing_right = True
+
         r1nx, r1ny = predict_next(r1.grid_x, r1.grid_y, a1, self.obstacle_positions)
+
+        # Track visual orientation for R2
+        if r2_action == 0 or r2_action == 1:
+            self.robot2_orientation = "vertical"
+        elif r2_action == 2:
+            self.robot2_orientation = "side"
+            self.robot2_facing_right = False
+        elif r2_action == 3:
+            self.robot2_orientation = "side"
+            self.robot2_facing_right = True
+
         r2nx, r2ny = predict_next(r2.grid_x, r2.grid_y, r2_action, self.obstacle_positions)
 
         r2_into_r1 = (r2nx == r1nx and r2ny == r1ny)
@@ -434,9 +461,9 @@ class TwoAgentWarehouseEnv(gym.Env):
                     attempted_y = r2.grid_y + delta_y
 
                     is_ramming_pickup = (
-                                self._r2_phase == PHASE_FETCHING and attempted_x == self._r2_target_gx and attempted_y == self._r2_target_gy)
+                            self._r2_phase == PHASE_FETCHING and attempted_x == self._r2_target_gx and attempted_y == self._r2_target_gy)
                     is_ramming_dropoff = (
-                                self._r2_phase == PHASE_DELIVERING and attempted_x == self.r2_dropoff_gx and attempted_y == self.r2_dropoff_gy)
+                            self._r2_phase == PHASE_DELIVERING and attempted_x == self.r2_dropoff_gx and attempted_y == self.r2_dropoff_gy)
 
                     if is_ramming_pickup or is_ramming_dropoff:
                         r2_reward += -60.0
@@ -463,7 +490,7 @@ class TwoAgentWarehouseEnv(gym.Env):
 
                 is_adjacent_to_pickup = (abs(r2.grid_x - self._r2_target_gx) + abs(r2.grid_y - self._r2_target_gy) == 1)
                 is_adjacent_to_dropoff = (
-                            abs(r2.grid_x - self.r2_dropoff_gx) + abs(r2.grid_y - self.r2_dropoff_gy) == 1)
+                        abs(r2.grid_x - self.r2_dropoff_gx) + abs(r2.grid_y - self.r2_dropoff_gy) == 1)
 
                 if self._r2_phase == PHASE_FETCHING and not r2.loaded and is_adjacent_to_pickup:
                     r2.loaded = True
@@ -515,7 +542,6 @@ class TwoAgentWarehouseEnv(gym.Env):
             "collisions": self.collision_count
         }
 
-        # Ensure truncated is properly returned here
         return self._r2_obs(), r2_reward, done, truncated, info
 
     def _update_r1_phase(self, action):
@@ -566,6 +592,20 @@ class TwoAgentWarehouseEnv(gym.Env):
             pygame.display.set_caption("Two-Agent Warehouse Optimization Training")
             self.font = pygame.font.SysFont("Arial", 18, bold=True)
 
+            # Helper function to maintain aspect ratio
+            def load_proportional_asset(asset_path, max_dimension):
+                original_image = pygame.image.load(asset_path).convert_alpha()
+                original_width, original_height = original_image.get_size()
+                scale_ratio = max_dimension / max(original_width, original_height)
+                target_width = int(original_width * scale_ratio)
+                target_height = int(original_height * scale_ratio)
+                return pygame.transform.scale(original_image, (target_width, target_height))
+
+            self.asset_robot_vertical = load_proportional_asset("assets/robot-vertical.png", GRID_SPACING)
+            self.asset_robot_side = load_proportional_asset("assets/robot-side.png", GRID_SPACING)
+            self.asset_robot_vertical_box = load_proportional_asset("assets/robot-vertical-box.png", GRID_SPACING)
+            self.asset_robot_side_box = load_proportional_asset("assets/robot-side-box.png", GRID_SPACING)
+
         if self.clock is None:
             self.clock = pygame.time.Clock()
 
@@ -610,27 +650,43 @@ class TwoAgentWarehouseEnv(gym.Env):
             bx, by = PADDING_BORDER + self._r2_target_gx * GRID_SPACING, PADDING_BORDER + self._r2_target_gy * GRID_SPACING
             pygame.draw.rect(canvas, color_r2, (bx, by, GRID_SPACING, GRID_SPACING), width=3)
 
+        # Draw R1 with Assets
         self.robot1.x = PADDING_BORDER + self.robot1.grid_x * GRID_SPACING
         self.robot1.y = PADDING_BORDER + self.robot1.grid_y * GRID_SPACING
-        self._safe_draw(canvas, self.robot1, color_r1)
+
+        if self.robot1_orientation == "vertical":
+            r1_asset = self.asset_robot_vertical_box if self.robot1.loaded else self.asset_robot_vertical
+        else:
+            base_r1_side = self.asset_robot_side_box if self.robot1.loaded else self.asset_robot_side
+            r1_asset = base_r1_side if self.robot1_facing_right else pygame.transform.flip(base_r1_side, True,
+                                                                                           False)
+
+        # Center the asset in the grid cell
+        r1_rect = r1_asset.get_rect(center=(self.robot1.x + GRID_SPACING // 2, self.robot1.y + GRID_SPACING // 2))
+        canvas.blit(r1_asset, r1_rect.topleft)
+
         pygame.draw.rect(canvas, color_r1, (self.robot1.x, self.robot1.y, GRID_SPACING, GRID_SPACING), width=2)
         text_r1 = self.font.render("R1", True, color_r1)
         canvas.blit(text_r1, (self.robot1.x + 5, self.robot1.y - 20))
 
-        if self.robot1.loaded:
-            pygame.draw.circle(canvas, color_r1,
-                               (int(self.robot1.x + GRID_SPACING // 2), int(self.robot1.y + GRID_SPACING // 2)), 8)
-
+        # Draw R2 with Assets
         self.robot2.x = PADDING_BORDER + self.robot2.grid_x * GRID_SPACING
         self.robot2.y = PADDING_BORDER + self.robot2.grid_y * GRID_SPACING
-        self._safe_draw(canvas, self.robot2, color_r2)
+
+        if self.robot2_orientation == "vertical":
+            r2_asset = self.asset_robot_vertical_box if self.robot2.loaded else self.asset_robot_vertical
+        else:
+            base_r2_side = self.asset_robot_side_box if self.robot2.loaded else self.asset_robot_side
+            r2_asset = base_r2_side if self.robot2_facing_right else pygame.transform.flip(base_r2_side, True,
+                                                                                           False)
+
+        # Center the asset in the grid cell
+        r2_rect = r2_asset.get_rect(center=(self.robot2.x + GRID_SPACING // 2, self.robot2.y + GRID_SPACING // 2))
+        canvas.blit(r2_asset, r2_rect.topleft)
+
         pygame.draw.rect(canvas, color_r2, (self.robot2.x, self.robot2.y, GRID_SPACING, GRID_SPACING), width=2)
         text_r2 = self.font.render("R2", True, color_r2)
         canvas.blit(text_r2, (self.robot2.x + 5, self.robot2.y - 20))
-
-        if self.robot2.loaded:
-            pygame.draw.circle(canvas, color_r2,
-                               (int(self.robot2.x + GRID_SPACING // 2), int(self.robot2.y + GRID_SPACING // 2)), 8)
 
         self.window.blit(canvas, (0, 0))
         pygame.display.update()
