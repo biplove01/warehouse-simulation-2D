@@ -14,17 +14,18 @@ from q_learning_agent import DualQAgent
 # ==========================================
 # REWARD SHAPING & PENALTY CONSTANTS
 # ==========================================
-R2_REWARD_STEP = -1  # Default step penalty to encourage speed
-R2_PENALTY_COLLISION = -50.0  # Heavy penalty for hitting R1 or R1 hitting R2
-R2_REWARD_PICKUP = 10.0  # Reward for successfully picking up a box
-R2_REWARD_DELIVER = 20.0  # Reward for successfully dropping off a box
-R2_REWARD_MOVE_CLOSER = 2.0  # Multiplier for moving closer to target
-R2_PENALTY_MOVE_AWAY_MULT = 4.0  # Multiplier for moving away from target
-PENALTY_WALL_COLLISION = -2.0  # Penalty for attempting to walk into walls or shelves
+R2_REWARD_STEP = -1
+R2_PENALTY_COLLISION = -50.0
+R2_REWARD_PICKUP = 10.0
+R2_REWARD_DELIVER = 20.0
+R2_REWARD_MOVE_CLOSER = 2.0
+R2_PENALTY_MOVE_AWAY_MULT = 4.0
+PENALTY_WALL_COLLISION = -35.0
+PENALTY_INVALID_INTERACT = -25.0
 
-REWARD_STAY_HOME_IDLE = 0.5         # Small positive reward for staying put at home when no task is assigned
-PENALTY_WANDERING_IDLE = -1.5       # Penalty for moving away from home or wandering when unassigned
-PENALTY_WRONG_DROPOFF_HOVER = -2.0  # Heavy penalty for hovering near Agent 1's drop-off zone
+REWARD_STAY_HOME_IDLE = 0.5
+PENALTY_WANDERING_IDLE = -1.5
+PENALTY_WRONG_DROPOFF_HOVER = -2.0
 # ==========================================
 
 AGENT1_QTABLE_FOLDER = "checkpoints"
@@ -127,13 +128,11 @@ class TwoAgentWarehouseEnv(gym.Env):
             for obj in self.shelves + self.dropoff_platforms
         }
 
-        # Keep R1's dropoff exactly the same so its Q-Table doesn't break
         if len(self.dropoff_platforms) > 0:
             central_platform = self.dropoff_platforms[len(self.dropoff_platforms) // 2]
             self.r1_dropoff_gx = round((central_platform.x - PADDING_BORDER) / GRID_SPACING)
             self.r1_dropoff_gy = round((central_platform.y - PADDING_BORDER) / GRID_SPACING)
 
-            # Assign a DIFFERENT dropoff platform for R2
             if len(self.dropoff_platforms) > 1:
                 for p in self.dropoff_platforms:
                     if p != central_platform:
@@ -194,6 +193,8 @@ class TwoAgentWarehouseEnv(gym.Env):
         self.r2_score = 0
         self.steps = 0
         self.collision_count = 0
+        self.consecutive_wall_hits = 0
+        self.consecutive_invalid_interacts = 0
 
         self._spawn_target()
         self._spawn_target()
@@ -315,10 +316,10 @@ class TwoAgentWarehouseEnv(gym.Env):
         elif self._r2_last_action == 3:
             lx = 1.0
 
-        can_pickup = float(
+        is_valid_pickup = float(
             not r2.loaded and self._r2_phase == PHASE_FETCHING and abs(r2.grid_x - self._r2_target_gx) + abs(
                 r2.grid_y - self._r2_target_gy) == 1)
-        can_deliver = float(
+        is_valid_delivery = float(
             r2.loaded and abs(r2.grid_x - self.r2_dropoff_gx) + abs(r2.grid_y - self.r2_dropoff_gy) == 1)
 
         base = [
@@ -334,7 +335,7 @@ class TwoAgentWarehouseEnv(gym.Env):
             is_r1 = (nx == r1.grid_x and ny == r1.grid_y)
             base.append(1.0 if (oob or wall or is_r1) else 0.0)
 
-        base += [lx, ly, can_pickup, can_deliver]
+        base += [lx, ly, is_valid_pickup, is_valid_delivery]
 
         r1nx, r1ny = self._r1_next_pos()
         extra = [
@@ -345,30 +346,39 @@ class TwoAgentWarehouseEnv(gym.Env):
         return np.array(base + extra, dtype=np.float32)
 
     def _get_action_mask(self):
-        mask = np.ones(6, dtype=np.float32)
-        r1nx, r1ny = self._r1_next_pos()
+        action_mask = np.ones(6, dtype=np.float32)
+        r1_next_x, r1_next_y = self._r1_next_pos()
 
-        for a, (dx, dy) in enumerate([(0, -1), (0, 1), (-1, 0), (1, 0)]):
-            nx, ny = self.robot2.grid_x + dx, self.robot2.grid_y + dy
-            if not (0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT):
-                mask[a] = 0.0
-            elif (nx, ny) in self.obstacle_positions:
-                mask[a] = 0.0
-            elif nx == r1nx and ny == r1ny:
-                mask[a] = 0.0
+        for action_index, (delta_x, delta_y) in enumerate([(0, -1), (0, 1), (-1, 0), (1, 0)]):
+            next_x, next_y = self.robot2.grid_x + delta_x, self.robot2.grid_y + delta_y
 
-        can_pickup = (not self.robot2.loaded and self._r2_phase == PHASE_FETCHING and abs(
-            self.robot2.grid_x - self._r2_target_gx) + abs(self.robot2.grid_y - self._r2_target_gy) == 1)
-        can_deliver = (self.robot2.loaded and abs(self.robot2.grid_x - self.r2_dropoff_gx) + abs(
-            self.robot2.grid_y - self.r2_dropoff_gy) == 1)
-        if not can_pickup and not can_deliver:
-            mask[4] = 0.0
+            is_out_of_bounds = not (0 <= next_x < GRID_WIDTH and 0 <= next_y < GRID_HEIGHT)
+            if is_out_of_bounds:
+                action_mask[action_index] = 0.0
+            elif (next_x, next_y) in self.obstacle_positions:
+                action_mask[action_index] = 0.0
+            elif next_x == r1_next_x and next_y == r1_next_y:
+                action_mask[action_index] = 0.0
 
-        return mask
+        is_adjacent_to_pickup = (
+                    abs(self.robot2.grid_x - self._r2_target_gx) + abs(self.robot2.grid_y - self._r2_target_gy) == 1)
+        is_adjacent_to_dropoff = (
+                    abs(self.robot2.grid_x - self.r2_dropoff_gx) + abs(self.robot2.grid_y - self.r2_dropoff_gy) == 1)
+
+        is_valid_pickup = (not self.robot2.loaded and self._r2_phase == PHASE_FETCHING and is_adjacent_to_pickup)
+        is_valid_delivery = (self.robot2.loaded and self._r2_phase == PHASE_DELIVERING and is_adjacent_to_dropoff)
+
+        if is_valid_pickup or is_valid_delivery:
+            action_mask[4] = 1.0
+        else:
+            action_mask[4] = 0.0
+
+        return action_mask
 
     def step(self, r2_action):
         self.steps += 1
         r1, r2 = self.robot1, self.robot2
+        truncated = False
 
         if len(self.queue) < 2 and random.random() < 0.1:
             self._spawn_target()
@@ -378,7 +388,6 @@ class TwoAgentWarehouseEnv(gym.Env):
         r1nx, r1ny = predict_next(r1.grid_x, r1.grid_y, a1, self.obstacle_positions)
         r2nx, r2ny = predict_next(r2.grid_x, r2.grid_y, r2_action, self.obstacle_positions)
 
-        # Collision logic: R2 hitting R1, or R1 hitting R2
         r2_into_r1 = (r2nx == r1nx and r2ny == r1ny)
         r1_into_r2 = (r1nx == r2.grid_x and r1ny == r2.grid_y)
         collision = r2_into_r1 or r1_into_r2
@@ -393,62 +402,101 @@ class TwoAgentWarehouseEnv(gym.Env):
 
         r2_reward = R2_REWARD_STEP
 
-        # ISSUE 1: Penalize wandering when unassigned (Homing Phase)
         if self._r2_phase == PHASE_HOMING:
             at_home = (r2.grid_x == AGENT2_HOME_X and r2.grid_y == AGENT2_HOME_Y)
-
             if at_home:
-                if r2_action == 5:  # Action 5 is "Wait"
+                if r2_action == 5:
                     r2_reward += REWARD_STAY_HOME_IDLE
                 else:
-                    # Penalize picking movement actions when it should just wait at home
                     r2_reward += PENALTY_WANDERING_IDLE
             else:
                 if r2_action == 5:
                     r2_reward += PENALTY_WANDERING_IDLE
 
-        # ISSUE 2: Penalize hovering near Robot 1's drop-off zone
         if self._r2_phase == PHASE_DELIVERING:
             dist_to_r1_dropoff = self.r1_dropoff_dist.get((r2.grid_x, r2.grid_y), 999)
-
             if dist_to_r1_dropoff <= 2:
                 r2_reward += PENALTY_WRONG_DROPOFF_HOVER
-
 
         if collision:
             self.collision_count += 1
             r2_reward += R2_PENALTY_COLLISION
             r2_action = 5
+            self.consecutive_wall_hits = 0
+            self.consecutive_invalid_interacts = 0
         else:
-
             if r2_action < 4:
+                self.consecutive_invalid_interacts = 0
                 if r2nx == r2.grid_x and r2ny == r2.grid_y:
-                    r2_reward += PENALTY_WALL_COLLISION
+                    action_deltas = [(0, -1), (0, 1), (-1, 0), (1, 0)]
+                    delta_x, delta_y = action_deltas[r2_action]
+                    attempted_x = r2.grid_x + delta_x
+                    attempted_y = r2.grid_y + delta_y
+
+                    is_ramming_pickup = (
+                                self._r2_phase == PHASE_FETCHING and attempted_x == self._r2_target_gx and attempted_y == self._r2_target_gy)
+                    is_ramming_dropoff = (
+                                self._r2_phase == PHASE_DELIVERING and attempted_x == self.r2_dropoff_gx and attempted_y == self.r2_dropoff_gy)
+
+                    if is_ramming_pickup or is_ramming_dropoff:
+                        r2_reward += -60.0
+                    else:
+                        r2_reward += PENALTY_WALL_COLLISION
+
+                    self.consecutive_wall_hits += 1
+                    if self.consecutive_wall_hits >= 5:
+                        truncated = True
                 else:
+                    self.consecutive_wall_hits = 0
                     r2.grid_x, r2.grid_y = r2nx, r2ny
                     dist_after = dist_map.get((r2nx, r2ny), 50)
-                    delta = dist_before - dist_after
-                    r2_reward += (delta * R2_REWARD_MOVE_CLOSER if delta >= 0 else delta * R2_PENALTY_MOVE_AWAY_MULT)
+                    distance_delta = dist_before - dist_after
+
+                    if distance_delta >= 0:
+                        r2_reward += distance_delta * R2_REWARD_MOVE_CLOSER
+                    else:
+                        r2_reward += distance_delta * R2_PENALTY_MOVE_AWAY_MULT
 
             elif r2_action == 4:
-                if self._r2_phase == PHASE_FETCHING and not r2.loaded:
-                    if abs(r2.grid_x - self._r2_target_gx) + abs(r2.grid_y - self._r2_target_gy) == 1:
-                        r2.loaded = True
-                        self._r2_just_picked_up = True
-                        r2_reward += R2_REWARD_PICKUP
-                        for s in self.shelves:
-                            if self._gc(s) == (self._r2_target_gx, self._r2_target_gy):
-                                s.has_box = False
-                                if hasattr(s, 'empty_image'):
-                                    s.image = s.empty_image
-                                break
-                elif self._r2_phase == PHASE_DELIVERING and r2.loaded:
-                    if abs(r2.grid_x - self.r2_dropoff_gx) + abs(r2.grid_y - self.r2_dropoff_gy) == 1:
-                        r2.loaded = False
-                        self.r2_score += 1
-                        self._r2_just_delivered = True
-                        r2_reward += R2_REWARD_DELIVER
+                self.consecutive_wall_hits = 0
+                interact_success = False
 
+                is_adjacent_to_pickup = (abs(r2.grid_x - self._r2_target_gx) + abs(r2.grid_y - self._r2_target_gy) == 1)
+                is_adjacent_to_dropoff = (
+                            abs(r2.grid_x - self.r2_dropoff_gx) + abs(r2.grid_y - self.r2_dropoff_gy) == 1)
+
+                if self._r2_phase == PHASE_FETCHING and not r2.loaded and is_adjacent_to_pickup:
+                    r2.loaded = True
+                    self._r2_just_picked_up = True
+                    r2_reward += R2_REWARD_PICKUP
+                    interact_success = True
+                    self.consecutive_invalid_interacts = 0
+
+                    for shelf in self.shelves:
+                        if self._gc(shelf) == (self._r2_target_gx, self._r2_target_gy):
+                            shelf.has_box = False
+                            if hasattr(shelf, 'empty_image'):
+                                shelf.image = shelf.empty_image
+                            break
+
+                elif self._r2_phase == PHASE_DELIVERING and r2.loaded and is_adjacent_to_dropoff:
+                    r2.loaded = False
+                    self.r2_score += 1
+                    self._r2_just_delivered = True
+                    r2_reward += R2_REWARD_DELIVER
+                    interact_success = True
+                    self.consecutive_invalid_interacts = 0
+
+                if not interact_success:
+                    r2_reward += PENALTY_INVALID_INTERACT
+                    self.consecutive_invalid_interacts += 1
+
+                    if self.consecutive_invalid_interacts >= 5:
+                        truncated = True
+
+            elif r2_action == 5:
+                self.consecutive_wall_hits = 0
+                self.consecutive_invalid_interacts = 0
 
         self._r2_last_action = r2_action
 
@@ -467,7 +515,8 @@ class TwoAgentWarehouseEnv(gym.Env):
             "collisions": self.collision_count
         }
 
-        return self._r2_obs(), r2_reward, done, False, info
+        # Ensure truncated is properly returned here
+        return self._r2_obs(), r2_reward, done, truncated, info
 
     def _update_r1_phase(self, action):
         if self._r1_phase == PHASE_FETCHING and action == 4:
@@ -547,14 +596,12 @@ class TwoAgentWarehouseEnv(gym.Env):
         for shelf in self.shelves:
             self._safe_draw(canvas, shelf, (200, 150, 100))
 
-        # Highlight Dropoff Platforms
         r1dx, r1dy = PADDING_BORDER + self.r1_dropoff_gx * GRID_SPACING, PADDING_BORDER + self.r1_dropoff_gy * GRID_SPACING
         pygame.draw.rect(canvas, color_r1, (r1dx, r1dy, GRID_SPACING, GRID_SPACING), width=3)
 
         r2dx, r2dy = PADDING_BORDER + self.r2_dropoff_gx * GRID_SPACING, PADDING_BORDER + self.r2_dropoff_gy * GRID_SPACING
         pygame.draw.rect(canvas, color_r2, (r2dx, r2dy, GRID_SPACING, GRID_SPACING), width=3)
 
-        # Highlight Target Shelves
         if self._r1_phase == PHASE_FETCHING:
             rx, ry = PADDING_BORDER + self._r1_target_gx * GRID_SPACING, PADDING_BORDER + self._r1_target_gy * GRID_SPACING
             pygame.draw.rect(canvas, color_r1, (rx, ry, GRID_SPACING, GRID_SPACING), width=3)
@@ -563,7 +610,6 @@ class TwoAgentWarehouseEnv(gym.Env):
             bx, by = PADDING_BORDER + self._r2_target_gx * GRID_SPACING, PADDING_BORDER + self._r2_target_gy * GRID_SPACING
             pygame.draw.rect(canvas, color_r2, (bx, by, GRID_SPACING, GRID_SPACING), width=3)
 
-        # Draw R1
         self.robot1.x = PADDING_BORDER + self.robot1.grid_x * GRID_SPACING
         self.robot1.y = PADDING_BORDER + self.robot1.grid_y * GRID_SPACING
         self._safe_draw(canvas, self.robot1, color_r1)
@@ -575,7 +621,6 @@ class TwoAgentWarehouseEnv(gym.Env):
             pygame.draw.circle(canvas, color_r1,
                                (int(self.robot1.x + GRID_SPACING // 2), int(self.robot1.y + GRID_SPACING // 2)), 8)
 
-        # Draw R2
         self.robot2.x = PADDING_BORDER + self.robot2.grid_x * GRID_SPACING
         self.robot2.y = PADDING_BORDER + self.robot2.grid_y * GRID_SPACING
         self._safe_draw(canvas, self.robot2, color_r2)
