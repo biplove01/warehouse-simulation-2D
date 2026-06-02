@@ -33,7 +33,7 @@ class ClickController:
 
         is_in_bounds = 0 <= clicked_grid_x < GRID_WIDTH and 0 <= clicked_grid_y < GRID_HEIGHT
         if not is_in_bounds:
-            print(f"  ✗ Click out of bounds, ignored.")
+            print(f"  Click out of bounds, ignored.")
             return
 
         for shelf in self.env.shelves:
@@ -45,4 +45,4 @@ class ClickController:
                 self.env.enqueue_target(clicked_grid_x, clicked_grid_y)
                 return
 
-        print(f"  ✗ No shelf at grid ({clicked_grid_x}, {clicked_grid_y}), click ignored.")
+        print(f"  No shelf at grid ({clicked_grid_x}, {clicked_grid_y}), click ignored.")

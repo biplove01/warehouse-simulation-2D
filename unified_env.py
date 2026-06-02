@@ -93,9 +93,9 @@ class QTablePolicy:
         self.agent = DualQAgent(action_dim=6)
         try:
             self.agent.load_tables(AGENT1_QTABLE_FOLDER, AGENT1_QTABLE_FILE)
-            print(f"✅ R1 Q-table loaded: {len(self.agent.q_table):,} states")
+            print(f"R1 Q-table loaded: {len(self.agent.q_table):,} states")
         except FileNotFoundError:
-            print(f"⚠️ R1 Q-table not found at {AGENT1_QTABLE_FOLDER}/{AGENT1_QTABLE_FILE}. R1 will use BFS purely.")
+            print(f"R1 Q-table not found at {AGENT1_QTABLE_FOLDER}/{AGENT1_QTABLE_FILE}. R1 will use BFS.")
 
         self.agent.epsilon = 0.0
         self.current_shelf_target_x = AGENT1_HOME_X

@@ -7,7 +7,7 @@ from constants import *
 from robot import Robot
 
 
-# ─── CONSTANTS ───────────────────────────────────────────────────────────────
+# Constants
 
 BACKGROUND_COLOR = (30, 30, 30)
 HUD_COLOR        = (20, 20, 20)
@@ -20,7 +20,7 @@ HUD_HEIGHT       = 50
 NOTIFICATION_DURATION = 90   # frames
 
 
-# ─── HELPER: BFS DISTANCE MAP ────────────────────────────────────────────────
+# Helper: BFS Distance Map
 
 def bfs_distance_map(start_grid_x, start_grid_y, obstacle_positions):
     """Returns a dict mapping (grid_x, grid_y) → BFS distance from the start."""
@@ -52,7 +52,7 @@ def grid_coords_from_object(obj):
     return grid_x, grid_y
 
 
-# ─── NOTIFICATION SYSTEM ─────────────────────────────────────────────────────
+# Notification System
 
 class Notification:
     def __init__(self, message, color, duration=NOTIFICATION_DURATION):
@@ -73,7 +73,7 @@ class Notification:
         return min(255, int(255 * self.frames_remaining / 30))
 
 
-# ─── MAIN GAME ───────────────────────────────────────────────────────────────
+# Main Game
 
 class Game:
 
@@ -92,7 +92,7 @@ class Game:
         self.font_medium = pygame.font.SysFont("monospace", 16)
         self.font_small  = pygame.font.SysFont("monospace", 13)
 
-        # ── World ────────────────────────────────────────────────────────────
+        # World
         self.shelves, self.charge_stations, self.dropoff_platforms = create_map()
 
         self.obstacle_positions = {
@@ -100,14 +100,14 @@ class Game:
             for obj in self.shelves + self.dropoff_platforms
         }
 
-        # ── Dropoff (central platform) ───────────────────────────────────────
+        # Dropoff (central platform)
         central_platform = self.dropoff_platforms[len(self.dropoff_platforms) // 2]
         self.dropoff_grid_x, self.dropoff_grid_y = grid_coords_from_object(central_platform)
 
-        # ── Robot ────────────────────────────────────────────────────────────
+        # Robot
         self.robot = Robot(start_x=3, start_y=3)
 
-        # ── Game state ───────────────────────────────────────────────────────
+        # Game state
         self.score                = 0
         self.steps                = 0
         self.target_grid_x        = 0
@@ -116,7 +116,7 @@ class Game:
 
         self._spawn_new_target()
 
-    # ── Target management ────────────────────────────────────────────────────
+    # Target management
 
     def _spawn_new_target(self):
         """Clear all shelves and place a box on a random one."""
@@ -130,7 +130,7 @@ class Game:
 
         self.target_grid_x, self.target_grid_y = grid_coords_from_object(new_target_shelf)
 
-    # ── Input handling ───────────────────────────────────────────────────────
+    # Input handling
 
     def _handle_movement(self, direction):
         """Move the robot one cell in the given direction if the cell is free."""
@@ -176,7 +176,7 @@ class Game:
             robot.loaded = True
             robot.update_image()
             self.notifications.append(
-                Notification("📦  Picked up!", SUCCESS_COLOR)
+                Notification("Picked up!", SUCCESS_COLOR)
             )
 
         elif robot.loaded and dist_to_dropoff <= 2:
@@ -184,7 +184,7 @@ class Game:
             robot.update_image()
             self.score += 1
             self.notifications.append(
-                Notification(f"✔  Delivered!  Score: {self.score}", ACCENT_COLOR)
+                Notification(f"Delivered! Score: {self.score}", ACCENT_COLOR)
             )
             self._spawn_new_target()
 
@@ -215,7 +215,7 @@ class Game:
                     pygame.quit()
                     sys.exit()
 
-    # ── Rendering ────────────────────────────────────────────────────────────
+    # Rendering
 
     def _draw_world(self):
         # Background
@@ -320,7 +320,7 @@ class Game:
         self._draw_notifications()
         pygame.display.flip()
 
-    # ── Game loop ────────────────────────────────────────────────────────────
+    # Game loop
 
     def run(self):
         while True:
@@ -329,7 +329,7 @@ class Game:
             self.clock.tick(60)
 
 
-# ─── ENTRY POINT ─────────────────────────────────────────────────────────────
+# Entry Point
 
 if __name__ == "__main__":
     game = Game()

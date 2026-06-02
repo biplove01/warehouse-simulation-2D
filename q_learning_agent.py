@@ -45,7 +45,7 @@ class DualQAgent:
 
         # Exploitation
         if state not in self.q_table:
-            # If the state is entirely unseen, pick a random action to avoid crashing
+            # Pick a random action for unseen states
             return random.randint(0, self.action_dim - 1)
 
         return int(np.argmax(self.q_table[state]))
@@ -78,5 +78,5 @@ class DualQAgent:
         with open(path, 'rb') as f:
             self.q_table = pickle.load(f)
 
-        # Once tables are loaded, the agent is usually evaluating, so turn off exploration
+        # Turn off exploration once tables are loaded
         self.epsilon = 0.0

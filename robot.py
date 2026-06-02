@@ -1,7 +1,7 @@
 import pygame
 from constants import *
 
-# ROBOT (PLAYER)
+# Robot
 class Robot():
   def __init__(self, start_x=0, start_y=0):
     self.grid_x = start_x
