@@ -1,32 +1,13 @@
 """
-reader.py — Kafka consumer for the 'publish-event' topic.
+reader_enhanced.py - Kafka Consumer with Optional Queue Integration
 
-Reads messages every 10 seconds (via a scheduled polling thread), deserialises
-the JSON payload into typed Python dataclasses that mirror the Java DTOs
-published by OrderPublisherImpl, and prints a structured summary to stdout.
+This module extends the original reader.py to optionally push WarehouseData
+items into a shared TaskQueue instead of just printing them.
 
-Payload schema (from Java DTOs):
-    WarehouseData:
-        oId          : int
-        items        : List[WarehouseItemData]
-
-    WarehouseItemData:
-        orderTracerCode : int
-        itemName        : str
-        itemCode        : int
-        size            : str
-        quantity        : int
-
-Dependencies:
-    pip install kafka-python-ng
-
-Environment variables (or edit KafkaConfig below):
-    KAFKA_BOOTSTRAP_SERVERS   default: localhost:9092
-    KAFKA_TOPIC               default: publish-event
-    KAFKA_GROUP_ID            default: order-reader-group
+Usage:
+1. Standalone (like reader.py): python reader_enhanced.py
+2. With queue integration: Instantiate with task_queue parameter
 """
-
-from __future__ import annotations
 
 import json
 import logging
@@ -35,41 +16,64 @@ import signal
 import sys
 import threading
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Callable
+from enum import Enum
 
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
 
-# ---------------------------------------------------------------------------
+# =========================================================================
 # Logging
-# ---------------------------------------------------------------------------
+# =========================================================================
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
-log = logging.getLogger("order-reader")
+log = logging.getLogger("order-reader-enhanced")
 
 
-# ---------------------------------------------------------------------------
+# =========================================================================
 # Configuration
-# ---------------------------------------------------------------------------
+# =========================================================================
 
 @dataclass(frozen=True)
 class KafkaConfig:
-    bootstrap_servers:    str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-    topic:                str = os.getenv("KAFKA_TOPIC", "publish-event")
-    group_id:             str = os.getenv("KAFKA_GROUP_ID", "order-reader-group")
+    bootstrap_servers: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    topic: str = os.getenv("KAFKA_TOPIC", "publish-event")
+    group_id: str = os.getenv("KAFKA_GROUP_ID", "order-reader-group")
     poll_interval_seconds: int = 10
-    poll_timeout_ms:       int = 5_000
-    auto_offset_reset:    str = "earliest"
-    enable_auto_commit:  bool = True
+    poll_timeout_ms: int = 5_000
+    auto_offset_reset: str = "earliest"
+    enable_auto_commit: bool = True
 
 
-# ---------------------------------------------------------------------------
+# =========================================================================
+# Size Mapping (duplicated from integrated_dual_agent.py)
+# =========================================================================
+
+class SizeEnum(Enum):
+    """Maps size strings to indices (0-4)"""
+    SMALL = ("small", 0)
+    MEDIUM = ("medium", 1)
+    LARGE = ("large", 2)
+    XL = ("xl", 3)
+    XXL = ("xxl", 4)
+
+    @classmethod
+    def from_string(cls, size_str: str) -> int:
+        """Convert size string (case-insensitive) to index"""
+        size_lower = size_str.lower().strip()
+        for size in cls:
+            if size.value[0] == size_lower:
+                return size.value[1]
+        raise ValueError(f"Unknown size: {size_str}")
+
+
+# =========================================================================
 # DTOs — mirror Java WarehouseData / WarehouseItemData exactly
-# ---------------------------------------------------------------------------
+# =========================================================================
 
 @dataclass
 class WarehouseItemData:
@@ -77,11 +81,11 @@ class WarehouseItemData:
     Mirrors com.ecomm.np.genevaecommerce.dto.WarehouseItemData.
     All fields are primitives/strings — no nested entities, no date types.
     """
-    order_tracer_code: int  = 0
-    item_name:         str  = ""
-    item_code:         int  = 0
-    size:              str  = ""
-    quantity:          int  = 0
+    order_tracer_code: int = 0
+    item_name: str = ""
+    item_code: int = 0
+    size: str = ""
+    quantity: int = 0
 
     @classmethod
     def from_dict(cls, data: dict) -> "WarehouseItemData":
@@ -112,16 +116,12 @@ class WarehouseData:
     This is the exact payload published to Kafka by OrderPublisherImpl
     via WarehouseData.buildFromOrder(orderedItems).
     """
-    o_id:  int                      = 0
-    items: List[WarehouseItemData]  = field(default_factory=list)
+    o_id: int = 0
+    items: List[WarehouseItemData] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict) -> "WarehouseData":
-        """
-        Deserialises a raw dict into a WarehouseData instance, recursively
-        mapping each item in the 'items' list to a WarehouseItemData.
-        Equivalent to: objectMapper.readValue(json, WarehouseData.class)
-        """
+        """Deserialises a raw dict into a WarehouseData instance"""
         items = [WarehouseItemData.from_dict(i) for i in (data.get("items") or [])]
         return cls(
             o_id=int(data.get("oId", 0)),
@@ -147,31 +147,42 @@ class WarehouseData:
         )
 
 
-# ---------------------------------------------------------------------------
+# =========================================================================
 # Kafka consumer
-# ---------------------------------------------------------------------------
+# =========================================================================
 
-class OrderKafkaReader:
+class OrderKafkaReaderEnhanced:
     """
-    Polls the Kafka topic on a background daemon thread every
-    `config.poll_interval_seconds` seconds, deserialises each message
-    into a WarehouseData instance, and prints it to stdout.
+    Enhanced version of OrderKafkaReader that can optionally push
+    messages into a task queue.
     """
 
-    def __init__(self, config: KafkaConfig) -> None:
-        self._config   = config
+    def __init__(
+        self,
+        config: KafkaConfig,
+        on_message_callback: Optional[Callable[[WarehouseData], None]] = None,
+    ) -> None:
+        """
+        Args:
+            config: Kafka configuration
+            on_message_callback: Optional callback when message is received.
+                                 Receives WarehouseData object.
+        """
+        self._config = config
         self._stop_evt = threading.Event()
-        self._thread   = threading.Thread(
+        self._on_message_callback = on_message_callback
+        self._thread = threading.Thread(
             target=self._run,
-            name="kafka-reader",
+            name="kafka-reader-enhanced",
             daemon=True,
         )
+        self._message_count = 0
 
     # ----- public API -----
 
     def start(self) -> None:
         log.info(
-            "Starting Kafka reader — topic=%s, brokers=%s, interval=%ss",
+            "Starting enhanced Kafka reader — topic=%s, brokers=%s, interval=%ss",
             self._config.topic,
             self._config.bootstrap_servers,
             self._config.poll_interval_seconds,
@@ -182,7 +193,11 @@ class OrderKafkaReader:
         log.info("Shutdown requested — signalling reader thread …")
         self._stop_evt.set()
         self._thread.join(timeout=15)
-        log.info("Reader thread stopped.")
+        log.info(f"Reader thread stopped. Processed {self._message_count} messages.")
+
+    def get_message_count(self) -> int:
+        """Get total messages processed"""
+        return self._message_count
 
     # ----- internal -----
 
@@ -223,20 +238,23 @@ class OrderKafkaReader:
                 batch_count += 1
                 self._handle_message(message)
         except StopIteration:
-            pass  # consumer_timeout_ms elapsed — normal, expected exit
+            pass
         except KafkaError as exc:
             log.error("Error consuming message — %s", exc, exc_info=True)
 
         log.info("Poll complete — %d message(s) processed.", batch_count)
 
-    @staticmethod
-    def _handle_message(message) -> None:
+    def _handle_message(self, message) -> None:
+        """Process incoming Kafka message"""
         email = message.key
-        raw   = message.value
+        raw = message.value
 
         log.debug(
             "Received — topic=%s, partition=%d, offset=%d, key=%s",
-            message.topic, message.partition, message.offset, email,
+            message.topic,
+            message.partition,
+            message.offset,
+            email,
         )
 
         try:
@@ -244,10 +262,15 @@ class OrderKafkaReader:
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             log.error(
                 "Failed to deserialise message at offset=%d — %s | raw=%s",
-                message.offset, exc, raw[:300],
+                message.offset,
+                exc,
+                raw[:300],
             )
             return
 
+        self._message_count += 1
+
+        # Print message
         separator = "─" * 60
         print(f"\n{separator}")
         print(f"  Email     : {email}")
@@ -256,14 +279,22 @@ class OrderKafkaReader:
         print(warehouse_data)
         print(separator)
 
+        # Call optional callback (for integration with task queue)
+        if self._on_message_callback:
+            try:
+                self._on_message_callback(warehouse_data)
+            except Exception as exc:
+                log.error(f"Callback failed for message: {exc}", exc_info=True)
 
-# ---------------------------------------------------------------------------
+
+# =========================================================================
 # Entry point
-# ---------------------------------------------------------------------------
+# =========================================================================
 
 def main() -> None:
+    """Standalone mode — same as original reader.py"""
     config = KafkaConfig()
-    reader = OrderKafkaReader(config)
+    reader = OrderKafkaReaderEnhanced(config)
 
     def _shutdown(sig, _frame):
         print()
@@ -271,7 +302,7 @@ def main() -> None:
         reader.stop()
         sys.exit(0)
 
-    signal.signal(signal.SIGINT,  _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
     reader.start()
