@@ -5,8 +5,15 @@ Reads messages every 10 seconds (via a scheduled polling thread), deserialises
 the JSON payload into typed Python dataclasses that mirror the Java entity model,
 and prints a structured summary to stdout.
 
+Schema notes (from Java entities):
+  - OrderedItems.orderInitiatedDate and orderUpdatedDate are @JsonIgnore
+    → they are NOT present in the Kafka payload and are excluded from the model.
+  - OrderedItems.orderItemAuditList is NOT @JsonIgnore
+    → it IS present in the payload and is fully mapped.
+  - OrderItemAudit.orderedItems and .items are @JsonIgnore → excluded.
+
 Dependencies:
-    pip install kafka-python-ng python-dateutil
+    pip install kafka-python-ng
 
 Environment variables (or edit the KafkaConfig dataclass below):
     KAFKA_BOOTSTRAP_SERVERS   default: localhost:9092
@@ -23,11 +30,9 @@ import signal
 import sys
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional
 
-from dateutil import parser as date_parser
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
 
@@ -50,7 +55,7 @@ log = logging.getLogger("order-reader")
 @dataclass(frozen=True)
 class KafkaConfig:
     bootstrap_servers: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-    topic: str             = os.getenv("KAFKA_TOPIC", "publish-event")
+    topic: str             = os.getenv("KAFKA_TOPIC", "order-publish")
     group_id: str          = os.getenv("KAFKA_GROUP_ID", "order-reader-group")
     poll_interval_seconds: int = 10
     poll_timeout_ms: int       = 5_000   # max wait inside each poll call
@@ -59,71 +64,100 @@ class KafkaConfig:
 
 
 # ---------------------------------------------------------------------------
-# Domain model  (mirrors Java entities — @JsonIgnore relations are optional)
+# Domain model
+#
+# Only fields that Jackson will serialise into the Kafka payload are modelled.
+# Fields annotated @JsonIgnore in Java (orderInitiatedDate, orderUpdatedDate,
+# orderDetails, orderedItems, items) are intentionally absent — they will
+# never appear in the message and mapping them would cause KeyErrors.
 # ---------------------------------------------------------------------------
 
 @dataclass
 class OrderItemAudit:
-    order_tracer_code: int         = 0
-    is_active: bool                = False
-    is_packed: bool                = False
-    is_delivered: bool             = False
-    quantity: int                  = 0
-    size: str                      = ""
-    item_price: float              = 0.0
+    """
+    Mirrors OrderItemAudit (excluding @JsonIgnore relations orderedItems / items).
+    Jackson serialises boolean getters as camelCase without the 'is' prefix
+    when using default settings, but Spring Boot commonly retains 'is' — both
+    variants are handled in from_dict below.
+    """
+    order_tracer_code: int  = 0
+    is_active: bool         = False
+    is_packed: bool         = False
+    is_delivered: bool      = False
+    quantity: int           = 0
+    size: str               = ""
+    item_price: float       = 0.0
 
     @classmethod
     def from_dict(cls, data: dict) -> "OrderItemAudit":
+        """
+        Maps a dict from the JSON payload to an OrderItemAudit instance.
+        Jackson may serialise boolean fields as 'active'/'isActive' depending
+        on the getter name, so both keys are checked.
+        """
+        def _bool(key_with_is: str) -> bool:
+            # Try 'isActive' first, fall back to 'active'
+            key_without = key_with_is[2].lower() + key_with_is[3:]
+            return bool(data.get(key_with_is, data.get(key_without, False)))
+
         return cls(
-            order_tracer_code=data.get("orderTracerCode", 0),
-            is_active=data.get("isActive", False),
-            is_packed=data.get("isPacked", False),
-            is_delivered=data.get("isDelivered", False),
-            quantity=data.get("quantity", 0),
-            size=data.get("size", ""),
+            order_tracer_code=int(data.get("orderTracerCode", 0)),
+            is_active=_bool("isActive"),
+            is_packed=_bool("isPacked"),
+            is_delivered=_bool("isDelivered"),
+            quantity=int(data.get("quantity", 0)),
+            size=str(data.get("size", "")),
             item_price=float(data.get("itemPrice", 0.0)),
         )
 
     def __str__(self) -> str:
+        status_flags = (
+            f"active={self.is_active}, "
+            f"packed={self.is_packed}, "
+            f"delivered={self.is_delivered}"
+        )
         return (
-            f"  OrderItemAudit(code={self.order_tracer_code}, "
-            f"qty={self.quantity}, size={self.size}, "
-            f"price={self.item_price:.2f}, "
-            f"packed={self.is_packed}, delivered={self.is_delivered})"
+            f"    OrderItemAudit(\n"
+            f"      orderTracerCode = {self.order_tracer_code}\n"
+            f"      quantity        = {self.quantity}\n"
+            f"      size            = {self.size!r}\n"
+            f"      itemPrice       = {self.item_price:.2f}\n"
+            f"      status          = [{status_flags}]\n"
+            f"    )"
         )
 
 
 @dataclass
 class OrderedItems:
-    o_id: int                                    = 0
-    order_initiated_date: Optional[datetime]     = None
-    order_updated_date: Optional[datetime]       = None
-    main_active: bool                            = False
-    processed: bool                              = False
-    total_price: Decimal                         = Decimal("0.00")
-    paid_price: Decimal                          = Decimal("0.00")
-    order_item_audit_list: List[OrderItemAudit]  = field(default_factory=list)
+    """
+    Mirrors OrderedItems.
+    Excluded (@JsonIgnore): orderInitiatedDate, orderUpdatedDate, orderDetails.
+    Included: oId, mainActive, processed, totalPrice, paidPrice,
+              orderItemAuditList (now serialised since @JsonIgnore was removed).
+    """
+    o_id: int                                   = 0
+    main_active: bool                           = False
+    processed: bool                             = False
+    total_price: Decimal                        = Decimal("0.00")
+    paid_price: Decimal                         = Decimal("0.00")
+    order_item_audit_list: List[OrderItemAudit] = field(default_factory=list)
 
     # ----- factory / object-mapper equivalent -----
 
     @classmethod
     def from_dict(cls, data: dict) -> "OrderedItems":
         """
-        Deserialises a raw dict (parsed from Kafka JSON) into an OrderedItems
-        instance, recursively mapping nested OrderItemAudit objects.
+        Deserialises a raw dict into an OrderedItems instance, recursively
+        mapping the nested orderItemAuditList.
         Equivalent to Jackson's ObjectMapper.readValue(json, OrderedItems.class).
         """
-        audit_list = [
-            OrderItemAudit.from_dict(a)
-            for a in data.get("orderItemAuditList", [])
-        ]
+        audit_raw  = data.get("orderItemAuditList") or []
+        audit_list = [OrderItemAudit.from_dict(a) for a in audit_raw]
 
         return cls(
-            o_id=data.get("oId", 0),
-            order_initiated_date=_parse_datetime(data.get("orderInitiatedDate")),
-            order_updated_date=_parse_datetime(data.get("orderUpdatedDate")),
-            main_active=data.get("mainActive", False),
-            processed=data.get("processed", False),
+            o_id=int(data.get("oId", 0)),
+            main_active=bool(data.get("mainActive", False)),
+            processed=bool(data.get("processed", False)),
             total_price=Decimal(str(data.get("totalPrice", "0.00"))),
             paid_price=Decimal(str(data.get("paidPrice", "0.00"))),
             order_item_audit_list=audit_list,
@@ -136,34 +170,21 @@ class OrderedItems:
         return cls.from_dict(data)
 
     def __str__(self) -> str:
-        audit_lines = "\n".join(str(a) for a in self.order_item_audit_list) or "  (none)"
+        audit_lines = (
+            "\n".join(str(a) for a in self.order_item_audit_list)
+            if self.order_item_audit_list
+            else "    (none)"
+        )
         return (
             f"OrderedItems(\n"
-            f"  oId             = {self.o_id}\n"
-            f"  initiated       = {self.order_initiated_date}\n"
-            f"  updated         = {self.order_updated_date}\n"
-            f"  mainActive      = {self.main_active}\n"
-            f"  processed       = {self.processed}\n"
-            f"  totalPrice      = {self.total_price}\n"
-            f"  paidPrice       = {self.paid_price}\n"
-            f"  auditItems:\n{audit_lines}\n"
+            f"  oId          = {self.o_id}\n"
+            f"  mainActive   = {self.main_active}\n"
+            f"  processed    = {self.processed}\n"
+            f"  totalPrice   = {self.total_price}\n"
+            f"  paidPrice    = {self.paid_price}\n"
+            f"  auditItems   =\n{audit_lines}\n"
             f")"
         )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
-    """Safely parse ISO-8601 or similar datetime strings; returns None on failure."""
-    if not value:
-        return None
-    try:
-        return date_parser.parse(value)
-    except (ValueError, OverflowError):
-        log.warning("Could not parse datetime value: %s", value)
-        return None
 
 
 # ---------------------------------------------------------------------------

@@ -37,9 +37,9 @@ def run_testing():
     try:
         policy_net.load_state_dict(torch.load(model_path, map_location=compute_device))
         policy_net.eval()
-        print(f"✅ Loaded trained model from {model_path}")
+        print(f"Loaded trained model from {model_path}")
     except FileNotFoundError:
-        print(f"❌ Model not found at {model_path}. Please run train.py first.")
+        print(f"Model not found at {model_path}. Please run train.py first.")
         return
 
     # 3. Run the Evaluation Loop

@@ -276,8 +276,7 @@ The system tracks and optimizes:
 
 ---
 
-## 🎓 Educational Value
-
+## 🎓 Educational Valu
 This project demonstrates:
 
 ✅ **Reinforcement Learning Fundamentals**

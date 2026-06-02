@@ -1,172 +1,283 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import numpy as np
-import random
-import pickle
+"""
+reader.py — Kafka consumer for the 'publish-event' topic.
+
+Reads messages every 10 seconds (via a scheduled polling thread), deserialises
+the JSON payload into typed Python dataclasses that mirror the Java DTOs
+published by OrderPublisherImpl, and prints a structured summary to stdout.
+
+Payload schema (from Java DTOs):
+    WarehouseData:
+        oId          : int
+        items        : List[WarehouseItemData]
+
+    WarehouseItemData:
+        orderTracerCode : int
+        itemName        : str
+        itemCode        : int
+        size            : str
+        quantity        : int
+
+Dependencies:
+    pip install kafka-python-ng
+
+Environment variables (or edit KafkaConfig below):
+    KAFKA_BOOTSTRAP_SERVERS   default: localhost:9092
+    KAFKA_TOPIC               default: publish-event
+    KAFKA_GROUP_ID            default: order-reader-group
+"""
+
+from __future__ import annotations
+
+import json
+import logging
 import os
-from collections import deque
-from unified_env import TwoAgentWarehouseEnv
+import signal
+import sys
+import threading
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+from kafka import KafkaConsumer
+from kafka.errors import KafkaError
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+log = logging.getLogger("order-reader")
 
 
-class DeepQNetwork(nn.Module):
-    def __init__(self, observation_dimension, total_actions):
-        super(DeepQNetwork, self).__init__()
-        self.network_layers = nn.Sequential(
-            nn.Linear(observation_dimension, 128),
-            nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Linear(128, total_actions)
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class KafkaConfig:
+    bootstrap_servers:    str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    topic:                str = os.getenv("KAFKA_TOPIC", "order-publish")
+    group_id:             str = os.getenv("KAFKA_GROUP_ID", "order-reader-group")
+    poll_interval_seconds: int = 10
+    poll_timeout_ms:       int = 5_000
+    auto_offset_reset:    str = "earliest"
+    enable_auto_commit:  bool = True
+
+
+# ---------------------------------------------------------------------------
+# DTOs — mirror Java WarehouseData / WarehouseItemData exactly
+# ---------------------------------------------------------------------------
+
+@dataclass
+class WarehouseItemData:
+    """
+    Mirrors com.ecomm.np.genevaecommerce.dto.WarehouseItemData.
+    All fields are primitives/strings — no nested entities, no date types.
+    """
+    order_tracer_code: int  = 0
+    item_name:         str  = ""
+    item_code:         int  = 0
+    size:              str  = ""
+    quantity:          int  = 0
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WarehouseItemData":
+        return cls(
+            order_tracer_code=int(data.get("orderTracerCode", 0)),
+            item_name=str(data.get("itemName", "")),
+            item_code=int(data.get("itemCode", 0)),
+            size=str(data.get("size", "")),
+            quantity=int(data.get("quantity", 0)),
         )
 
-    def forward(self, state_tensor):
-        return self.network_layers(state_tensor)
+    def __str__(self) -> str:
+        return (
+            f"    WarehouseItemData(\n"
+            f"      orderTracerCode = {self.order_tracer_code}\n"
+            f"      itemName        = {self.item_name!r}\n"
+            f"      itemCode        = {self.item_code}\n"
+            f"      size            = {self.size!r}\n"
+            f"      quantity        = {self.quantity}\n"
+            f"    )"
+        )
 
 
-def select_masked_action(evaluation_model, current_state, current_epsilon, action_mask, recommended_bfs_action):
-    if random.random() < current_epsilon:
-        if random.random() >= 0.30 and action_mask[recommended_bfs_action] == 1.0:
-            return recommended_bfs_action
-        available_valid_actions = np.where(action_mask == 1.0)[0]
-        return random.choice(available_valid_actions) if len(available_valid_actions) > 0 else 5
+@dataclass
+class WarehouseData:
+    """
+    Mirrors com.ecomm.np.genevaecommerce.dto.WarehouseData.
+    This is the exact payload published to Kafka by OrderPublisherImpl
+    via WarehouseData.buildFromOrder(orderedItems).
+    """
+    o_id:  int                      = 0
+    items: List[WarehouseItemData]  = field(default_factory=list)
 
-    state_tensor = torch.FloatTensor(current_state).unsqueeze(0)
-    with torch.no_grad():
-        predicted_q_values = evaluation_model(state_tensor).cpu().numpy()[0]
+    @classmethod
+    def from_dict(cls, data: dict) -> "WarehouseData":
+        """
+        Deserialises a raw dict into a WarehouseData instance, recursively
+        mapping each item in the 'items' list to a WarehouseItemData.
+        Equivalent to: objectMapper.readValue(json, WarehouseData.class)
+        """
+        items = [WarehouseItemData.from_dict(i) for i in (data.get("items") or [])]
+        return cls(
+            o_id=int(data.get("oId", 0)),
+            items=items,
+        )
 
-    predicted_q_values[action_mask == 0.0] = -float('inf')
-    return int(np.argmax(predicted_q_values))
+    @classmethod
+    def from_json(cls, raw_json: str) -> "WarehouseData":
+        """Entry point — accepts the raw JSON string straight from Kafka."""
+        return cls.from_dict(json.loads(raw_json))
+
+    def __str__(self) -> str:
+        item_lines = (
+            "\n".join(str(i) for i in self.items)
+            if self.items
+            else "    (no items)"
+        )
+        return (
+            f"WarehouseData(\n"
+            f"  oId   = {self.o_id}\n"
+            f"  items =\n{item_lines}\n"
+            f")"
+        )
 
 
-def execute_training_loop():
-    # env = TwoAgentWarehouseEnv(render_mode=None)
-    env = TwoAgentWarehouseEnv(render_mode="human")
-    observation_dim = env.observation_space.shape[0]
-    total_actions = env.action_space.n
+# ---------------------------------------------------------------------------
+# Kafka consumer
+# ---------------------------------------------------------------------------
 
-    policy_net = DeepQNetwork(observation_dim, total_actions)
-    target_net = DeepQNetwork(observation_dim, total_actions)
-    target_net.load_state_dict(policy_net.state_dict())
+class OrderKafkaReader:
+    """
+    Polls the Kafka topic on a background daemon thread every
+    `config.poll_interval_seconds` seconds, deserialises each message
+    into a WarehouseData instance, and prints it to stdout.
+    """
 
-    optimizer = optim.Adam(policy_net.parameters(), lr=1e-4)
-    buffer = deque(maxlen=50000)
+    def __init__(self, config: KafkaConfig) -> None:
+        self._config   = config
+        self._stop_evt = threading.Event()
+        self._thread   = threading.Thread(
+            target=self._run,
+            name="kafka-reader",
+            daemon=True,
+        )
 
-    epsilon = 0.7
-    epsilon_decay = 0.999
-    epsilon_min = 0.05
-    batch_size = 128
-    gamma = 0.99
+    # ----- public API -----
 
-    total_episodes = 2000
-    checkpoint_directory = "checkpoints"
-    os.makedirs(checkpoint_directory, exist_ok=True)
+    def start(self) -> None:
+        log.info(
+            "Starting Kafka reader — topic=%s, brokers=%s, interval=%ss",
+            self._config.topic,
+            self._config.bootstrap_servers,
+            self._config.poll_interval_seconds,
+        )
+        self._thread.start()
 
-    highest_reward = -9999.0
-    best_score_achieved = 0
+    def stop(self) -> None:
+        log.info("Shutdown requested — signalling reader thread …")
+        self._stop_evt.set()
+        self._thread.join(timeout=15)
+        log.info("Reader thread stopped.")
 
-    try:
-        for episode in range(total_episodes):
-            should_render = (episode % 20 == 0)
-            if should_render:
-                env.close()
-                env = TwoAgentWarehouseEnv(render_mode=None)
-            else:
-                if env.render_mode == "human":
-                    env.close()
-                    env = TwoAgentWarehouseEnv(render_mode=None)
+    # ----- internal -----
 
-            state, info = env.reset()
-            action_mask = info["action_mask"]
-            recommended_bfs_action = info["bfs_action"]
+    def _build_consumer(self) -> KafkaConsumer:
+        return KafkaConsumer(
+            self._config.topic,
+            bootstrap_servers=self._config.bootstrap_servers,
+            group_id=self._config.group_id,
+            auto_offset_reset=self._config.auto_offset_reset,
+            enable_auto_commit=self._config.enable_auto_commit,
+            value_deserializer=lambda b: b.decode("utf-8"),
+            key_deserializer=lambda b: b.decode("utf-8") if b else None,
+            consumer_timeout_ms=self._config.poll_timeout_ms,
+        )
 
-            total_r2_reward = 0.0
-            final_r1_score = 0
-            final_r2_score = 0
-            final_collisions = 0
+    def _run(self) -> None:
+        consumer: Optional[KafkaConsumer] = None
+        try:
+            consumer = self._build_consumer()
+            log.info("Consumer connected. Polling every %ds …", self._config.poll_interval_seconds)
 
-            while True:
-                action = select_masked_action(policy_net, state, epsilon, action_mask, recommended_bfs_action)
+            while not self._stop_evt.is_set():
+                self._poll_once(consumer)
+                self._stop_evt.wait(timeout=self._config.poll_interval_seconds)
 
-                next_state, reward, terminated, truncated, next_info = env.step(action)
-                next_action_mask = next_info["action_mask"]
-                next_bfs_action = next_info["bfs_action"]
+        except KafkaError as exc:
+            log.error("Fatal Kafka error — %s", exc, exc_info=True)
+        finally:
+            if consumer:
+                consumer.close()
+                log.info("Kafka consumer closed.")
 
-                final_r1_score = next_info["r1_score"]
-                final_r2_score = next_info["r2_score"]
-                final_collisions = next_info["collisions"]
+    def _poll_once(self, consumer: KafkaConsumer) -> None:
+        log.info("Polling topic '%s' …", self._config.topic)
+        batch_count = 0
+        try:
+            for message in consumer:
+                batch_count += 1
+                self._handle_message(message)
+        except StopIteration:
+            pass  # consumer_timeout_ms elapsed — normal, expected exit
+        except KafkaError as exc:
+            log.error("Error consuming message — %s", exc, exc_info=True)
 
-                buffer.append((
-                    state, action, reward, next_state,
-                    float(terminated or truncated), action_mask, next_action_mask
-                ))
+        log.info("Poll complete — %d message(s) processed.", batch_count)
 
-                state = next_state
-                action_mask = next_action_mask
-                recommended_bfs_action = next_bfs_action
-                total_r2_reward += reward
+    @staticmethod
+    def _handle_message(message) -> None:
+        email = message.key
+        raw   = message.value
 
-                if len(buffer) > batch_size:
-                    minibatch = random.sample(buffer, batch_size)
-                    b_s, b_a, b_r, b_ns, b_d, b_am, b_nam = zip(*minibatch)
+        log.debug(
+            "Received — topic=%s, partition=%d, offset=%d, key=%s",
+            message.topic, message.partition, message.offset, email,
+        )
 
-                    t_s = torch.FloatTensor(np.array(b_s))
-                    t_a = torch.LongTensor(np.array(b_a)).unsqueeze(1)
-                    t_r = torch.FloatTensor(np.array(b_r)).unsqueeze(1)
-                    t_ns = torch.FloatTensor(np.array(b_ns))
-                    t_d = torch.FloatTensor(np.array(b_d)).unsqueeze(1)
-                    t_nam = torch.FloatTensor(np.array(b_nam))
+        try:
+            warehouse_data = WarehouseData.from_json(raw)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            log.error(
+                "Failed to deserialise message at offset=%d — %s | raw=%s",
+                message.offset, exc, raw[:300],
+            )
+            return
 
-                    current_q = policy_net(t_s).gather(1, t_a)
+        separator = "─" * 60
+        print(f"\n{separator}")
+        print(f"  Email     : {email}")
+        print(f"  Topic     : {message.topic}  |  Partition: {message.partition}  |  Offset: {message.offset}")
+        print(separator)
+        print(warehouse_data)
+        print(separator)
 
-                    with torch.no_grad():
-                        next_q = target_net(t_ns)
-                        next_q[t_nam == 0.0] = -float('inf')
-                        max_next_q = next_q.max(1)[0].unsqueeze(1)
-                        target_q = t_r + (gamma * max_next_q * (1 - t_d))
 
-                    loss = nn.MSELoss()(current_q, target_q)
-                    optimizer.zero_grad()
-                    loss.backward()
-                    nn.utils.clip_grad_norm_(policy_net.parameters(), 10.0)
-                    optimizer.step()
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
-                if terminated or truncated:
-                    break
+def main() -> None:
+    config = KafkaConfig()
+    reader = OrderKafkaReader(config)
 
-            epsilon = max(epsilon_min, epsilon * epsilon_decay)
+    def _shutdown(sig, _frame):
+        print()
+        log.info("Signal %s received — shutting down …", signal.Signals(sig).name)
+        reader.stop()
+        sys.exit(0)
 
-            if final_r2_score > best_score_achieved:
-                best_score_achieved = final_r2_score
+    signal.signal(signal.SIGINT,  _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
 
-            if episode % 10 == 0:
-                target_net.load_state_dict(policy_net.state_dict())
-                print(f"Ep {episode:4d} | Eps: {epsilon:.2f} | R1 Score (Deliveries): {final_r1_score:2d} | "
-                      f"R2 Score (Deliveries): {final_r2_score:2d} | Best R2 Score: {best_score_achieved:2d} | "
-                      f"Collisions: {final_collisions:2d} | R2 Reward: {total_r2_reward:.2f}")
-
-                torch.save(policy_net.state_dict(), os.path.join(checkpoint_directory, "latest_model.pth"))
-                with open(os.path.join(checkpoint_directory, "replay_buffer.pkl"), "wb") as file_out:
-                    pickle.dump(buffer, file_out)
-
-                if total_r2_reward > highest_reward:
-                    highest_reward = total_r2_reward
-                    torch.save(policy_net.state_dict(), os.path.join(checkpoint_directory, "best_model.pth"))
-
-            if (episode + 1) % 200 == 0:
-                periodic_model_path = os.path.join(checkpoint_directory, f"model_episode.pth")
-                torch.save(policy_net.state_dict(), periodic_model_path)
-                print(f"Saved periodic checkpoint: {periodic_model_path}")
-
-    except KeyboardInterrupt:
-        print("\nTraining interrupted. Saving current progress...")
-
-    finally:
-        final_model_path = os.path.join(checkpoint_directory, "model_final_exit.pth")
-        torch.save(policy_net.state_dict(), final_model_path)
-        print(f"Saved final model to: {final_model_path}")
-        env.close()
+    reader.start()
+    log.info("Press Ctrl+C to stop.")
+    signal.pause()
 
 
 if __name__ == "__main__":
-    execute_training_loop()
+    main()
