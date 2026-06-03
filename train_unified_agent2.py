@@ -92,8 +92,8 @@ def execute_training_loop():
                 next_action_mask = next_info["action_mask"]
                 next_bfs_action = next_info["bfs_action"]
 
-                final_r1_score = next_info["r1_score"]
-                final_r2_score = next_info["r2_score"]
+                final_r1_score = next_info["agent1_score"]
+                final_r2_score = next_info["agent2_score"]
                 final_collisions = next_info["collisions"]
 
                 buffer.append((
@@ -108,22 +108,22 @@ def execute_training_loop():
 
                 if len(buffer) > batch_size:
                     minibatch = random.sample(buffer, batch_size)
-                    b_s, b_a, b_r, b_ns, b_d, b_am, b_nam = zip(*minibatch)
+                    batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones, batch_action_masks, batch_next_action_masks = zip(*minibatch)
 
-                    t_s = torch.FloatTensor(np.array(b_s))
-                    t_a = torch.LongTensor(np.array(b_a)).unsqueeze(1)
-                    t_r = torch.FloatTensor(np.array(b_r)).unsqueeze(1)
-                    t_ns = torch.FloatTensor(np.array(b_ns))
-                    t_d = torch.FloatTensor(np.array(b_d)).unsqueeze(1)
-                    t_nam = torch.FloatTensor(np.array(b_nam))
+                    tensor_states = torch.FloatTensor(np.array(batch_states))
+                    tensor_actions = torch.LongTensor(np.array(batch_actions)).unsqueeze(1)
+                    tensor_rewards = torch.FloatTensor(np.array(batch_rewards)).unsqueeze(1)
+                    tensor_next_states = torch.FloatTensor(np.array(batch_next_states))
+                    tensor_dones = torch.FloatTensor(np.array(batch_dones)).unsqueeze(1)
+                    tensor_next_action_masks = torch.FloatTensor(np.array(batch_next_action_masks))
 
-                    current_q = policy_net(t_s).gather(1, t_a)
+                    current_q = policy_net(tensor_states).gather(1, tensor_actions)
 
                     with torch.no_grad():
-                        next_q = target_net(t_ns)
-                        next_q[t_nam == 0.0] = -float('inf')
+                        next_q = target_net(tensor_next_states)
+                        next_q[tensor_next_action_masks == 0.0] = -float('inf')
                         max_next_q = next_q.max(1)[0].unsqueeze(1)
-                        target_q = t_r + (gamma * max_next_q * (1 - t_d))
+                        target_q = tensor_rewards + (gamma * max_next_q * (1 - tensor_dones))
 
                     loss = nn.MSELoss()(current_q, target_q)
                     optimizer.zero_grad()

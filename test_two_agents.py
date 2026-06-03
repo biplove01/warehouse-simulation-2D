@@ -39,7 +39,7 @@ def run_testing():
                 gx = round((mx - PADDING_BORDER) / GRID_SPACING)
                 gy = round((my - PADDING_BORDER) / GRID_SPACING)
                 for shelf in env.shelves:
-                    sgx, sgy = env._gc(shelf)
+                    sgx, sgy = env._get_grid_coords(shelf)
                     if sgx == gx and sgy == gy:
                         if not shelf.has_box:
                             shelf.has_box = True
