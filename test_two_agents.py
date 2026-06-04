@@ -77,12 +77,9 @@ def run_testing():
             # (Optional) Print the steps to monitor what the network is choosing
             action_names = ["Up", "Down", "Left", "Right", "Interact", "Wait"]
             print(f"Chosen Action: {action_names[best_action]:<8} | Reward: {reward:.1f}")
-
     except KeyboardInterrupt:
         print("\nTesting manually interrupted.")
     finally:
         env.close()
-
-
 if __name__ == "__main__":
     run_testing()

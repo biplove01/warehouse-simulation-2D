@@ -14,7 +14,7 @@ from typing import Optional, Tuple, Dict, List
 from dataclasses import dataclass
 from collections import deque
 
-from integrated_dual_agent import WarehouseTask, TaskQueue, SizeEnum
+from integrated_dual_agent_final import WarehouseTask, TaskQueue, SizeEnum, compute_shelf_index
 
 log = logging.getLogger("queue-manager")
 
@@ -51,7 +51,7 @@ class QueueToEnvironmentBridge:
             shelves: List of shelf objects from environment (has .x, .y properties)
         """
         self.task_queue = task_queue
-        self.shelves = shelves  # All 120 shelves in environment
+        self.shelves = shelves  # All shelves in environment
         self.current_task: Optional[QueuedShelfTask] = None
         self.completed_tasks: Dict[int, WarehouseTask] = {}  # tracer_code -> task
         self.in_progress: List[QueuedShelfTask] = []
@@ -61,29 +61,28 @@ class QueueToEnvironmentBridge:
 
     def _build_shelf_coords_map(self) -> Dict[int, Tuple[int, int]]:
         """
-        Create mapping from shelf indices (0-119) to grid coordinates.
+        Create mapping from shelf indices (0-49) to grid coordinates.
         
-        Note: This assumes shelves are indexed 0-119 and sorted consistently
-        with the formula: shelf_index = (item_code - 1) * 5 + size_index
+        Formula: shelf_index = (item_code - 1) * 5 + size_index
+        Items 1-10, sizes 0-4 → indices 0-49
         """
+        from constants import PADDING_BORDER, GRID_SPACING
+
         coords_map = {}
         for idx, shelf in enumerate(self.shelves):
-            if idx < 120:  # Ensure we only map valid indices
-                # Extract grid coordinates from shelf object
-                # Assuming shelf has .grid_x and .grid_y attributes
-                if hasattr(shelf, "grid_x") and hasattr(shelf, "grid_y"):
-                    coords_map[idx] = (shelf.grid_x, shelf.grid_y)
-                else:
-                    # Fallback: try to derive from .x and .y if grid coords unavailable
-                    coords_map[idx] = (idx % 10, idx // 10)
+            if idx >= 50:  # Only map the first 50 shelves (10 items × 5 sizes)
+                break
+            gx = round((shelf.x - PADDING_BORDER) / GRID_SPACING)
+            gy = round((shelf.y - PADDING_BORDER) / GRID_SPACING)
+            coords_map[idx] = (gx, gy)
         return coords_map
 
     def get_shelf_coordinates(self, shelf_index: int) -> Tuple[int, int]:
         """
-        Get grid (x, y) for a shelf index (0-119).
+        Get grid (x, y) for a shelf index (0-49).
         
         Args:
-            shelf_index: Index from 0 to 119
+            shelf_index: Index from 0 to 49
             
         Returns:
             (grid_x, grid_y) tuple
@@ -135,7 +134,6 @@ class QueueToEnvironmentBridge:
         )
         
         self.in_progress.append(queued_task)
-        self.task_queue.assign_task(task.tracer_code, agent_name)
         
         log.info(
             f"Dispatched to {agent_name}: {task.item_name} "
@@ -147,7 +145,6 @@ class QueueToEnvironmentBridge:
 
     def mark_item_pickup(self, queued_task: QueuedShelfTask) -> None:
         """Mark that an item has been picked up from the shelf"""
-        queued_task.remaining_quantity -= 1
         log.debug(
             f"Picked up item from {queued_task.task.item_name} "
             f"({queued_task.remaining_quantity} remaining)"
@@ -224,34 +221,17 @@ class QueueToEnvironmentBridge:
 # Utility Functions
 # =========================================================================
 
-def compute_shelf_index(item_code: int, size: str) -> int:
-    """
-    Compute shelf index from item code and size.
-    
-    Args:
-        item_code: 1-24
-        size: "small", "medium", "large", "xl", or "xxl"
-        
-    Returns:
-        Index 0-119
-        
-    Formula: (item_code - 1) * 5 + size_index
-    """
-    size_index = SizeEnum.from_string(size)
-    return (item_code - 1) * 5 + size_index
-
-
 def decompose_shelf_index(shelf_index: int) -> Tuple[int, str]:
     """
     Reverse the shelf index back to (item_code, size).
     
     Args:
-        shelf_index: 0-119
+        shelf_index: 0-49
         
     Returns:
         (item_code, size_string) tuple
     """
-    if not 0 <= shelf_index < 120:
+    if not 0 <= shelf_index < 50:
         raise ValueError(f"Invalid shelf index: {shelf_index}")
     
     item_code = (shelf_index // 5) + 1
@@ -271,13 +251,13 @@ def decompose_shelf_index(shelf_index: int) -> Tuple[int, str]:
 
 if __name__ == "__main__":
     # Test shelf index computation
-    print("Testing shelf index computation:")
-    print(f"Item 1, small → index {compute_shelf_index(1, 'small')}")  # Should be 0
-    print(f"Item 1, xxl → index {compute_shelf_index(1, 'xxl')}")      # Should be 4
-    print(f"Item 2, small → index {compute_shelf_index(2, 'small')}")  # Should be 5
-    print(f"Item 24, xxl → index {compute_shelf_index(24, 'xxl')}")    # Should be 119
+    print("Testing shelf index computation (10 items × 5 sizes = 50 shelves):")
+    print(f"Item 1, small → index {compute_shelf_index(1, 'small')}")    # Should be 0
+    print(f"Item 1, xxl → index {compute_shelf_index(1, 'xxl')}")        # Should be 4
+    print(f"Item 2, small → index {compute_shelf_index(2, 'small')}")    # Should be 5
+    print(f"Item 10, xxl → index {compute_shelf_index(10, 'xxl')}")      # Should be 49
     
     print("\nTesting shelf index decomposition:")
-    for idx in [0, 4, 5, 119]:
+    for idx in [0, 4, 5, 49]:
         item_code, size = decompose_shelf_index(idx)
         print(f"Index {idx} → Item {item_code}, {size}")

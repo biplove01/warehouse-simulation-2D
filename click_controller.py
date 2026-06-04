@@ -2,7 +2,6 @@ import sys
 import pygame
 from constants import PADDING_BORDER, GRID_SPACING, GRID_WIDTH, GRID_HEIGHT
 
-
 class ClickController:
     """
     Listens for mouse clicks on the pygame window and converts them
@@ -45,4 +44,4 @@ class ClickController:
                 self.env.enqueue_target(clicked_grid_x, clicked_grid_y)
                 return
 
-        print(f"  ✗ No shelf at grid ({clicked_grid_x}, {clicked_grid_y}), click ignored.")
+        print(f" No shelf at grid ({clicked_grid_x}, {clicked_grid_y}), click ignored.")
