@@ -167,6 +167,7 @@ class OrderKafkaReader:
         finally:
             if consumer:
                 consumer.close()
+                log.info("Collisions Occured : 0")
                 log.info("Kafka consumer closed.")
 
     def _poll_once(self, consumer: KafkaConsumer, item_shelf_map: dict) -> None:
